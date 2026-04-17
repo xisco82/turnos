@@ -1,6 +1,6 @@
 {
-  "name": "TURNOS XISCO",
-  "description": "Una aplicación intuitiva para gestionar y automatizar los horarios de trabajo semanales del equipo, desarrollado por xisco.",
+  "name": "TURNOS XISCO PRO",
+  "description": "Sistema determinista de gestión de turnos para recepción con integración en tiempo real y reglas automatizadas.",
   "requestFramePermissions": [],
   "majorCapabilities": []
 }

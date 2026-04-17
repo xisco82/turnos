@@ -1,0 +1,139 @@
+{
+  "entities": {
+    "Employee": {
+      "title": "Employee",
+      "description": "Staff member information and scheduling preferences",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "role": { "type": "string", "enum": ["Jefe", "2ª Jefa", "Recepcionista", "Ayudante", "Conserje"] },
+        "postNightBehaviour": { "type": "string", "enum": ["Off", "Afternoon"] },
+        "isNightRotationMember": { "type": "boolean" },
+        "isWeekendRotationMember": { "type": "boolean" },
+        "fixedWeekendOff": { "type": "boolean" },
+        "specialRules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "dia": { "type": "string" },
+              "accion": { "type": "string", "enum": ["SOLO", "NUNCA", "RESTRINGIR_HORAS", "PREFERENCIA"] },
+              "turno": { "type": "string" },
+              "startTime": { "type": "string" },
+              "endTime": { "type": "string" }
+            }
+          }
+        }
+      },
+      "required": ["name", "role"]
+    },
+    "ShiftType": {
+      "title": "Shift Type",
+      "description": "Definition of a work shift",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string" },
+        "label": { "type": "string" },
+        "startTime": { "type": "string" },
+        "endTime": { "type": "string" },
+        "color": { "type": "string" }
+      },
+      "required": ["code", "label"]
+    },
+    "ScheduleRequest": {
+      "title": "Schedule Request",
+      "description": "Leave, vacation, or other absence requests",
+      "type": "object",
+      "properties": {
+        "employeeId": { "type": "string" },
+        "startDate": { "type": "string", "format": "date" },
+        "endDate": { "type": "string", "format": "date" },
+        "type": { "type": "string", "enum": ["Vacación", "Baja", "Festivo", "Manual"] },
+        "reason": { "type": "string" }
+      },
+      "required": ["employeeId", "startDate", "endDate", "type"]
+    },
+    "GlobalRule": {
+      "title": "Global Rule",
+      "description": "System-wide scheduling constraints",
+      "type": "object",
+      "properties": {
+        "key": { "type": "string" },
+        "value": { "type": "number" }
+      },
+      "required": ["key", "value"]
+    },
+    "Schedule": {
+      "title": "Weekly Schedule",
+      "description": "The generated shift assignments for a specific week",
+      "type": "object",
+      "properties": {
+        "weekNumber": { "type": "number" },
+        "year": { "type": "number" },
+        "generatedAt": { "type": "string", "format": "date-time" },
+        "assignments": { "type": "object" }
+      },
+      "required": ["weekNumber", "year", "assignments"]
+    },
+    "Configuration": {
+      "title": "System Configuration",
+      "description": "Rules and limits for the scheduler",
+      "type": "object",
+      "properties": {
+        "jefeViernesSabadoLibre": { "type": "string" },
+        "jefeDomingoLunesLibre": { "type": "string" },
+        "recepcionistas": { "type": "array", "items": { "type": "string" } },
+        "ayudantesRecepcion": { "type": "array", "items": { "type": "string" } },
+        "conserjeNoche": { "type": "string" },
+        "capacidad": { "type": "object" },
+        "horariosBase": { "type": "object" },
+        "horariosExtra": { "type": "array", "items": { "type": "string" } },
+        "rotacionFindeLibre": { "type": "object" },
+        "rotacionCoberturaConserje": { "type": "object" },
+        "restriccionesTurnos": { "type": "object" },
+        "preferenciasEmpleados": { 
+          "type": "array", 
+          "items": { 
+            "type": "object",
+            "properties": {
+              "nombre": { "type": "string" },
+              "turnoPreferido": { "type": "string" },
+              "diasAfectados": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "objetivosSemanales": {
+          "type": "object",
+          "properties": {
+            "diasTrabajo": { "type": "number" },
+            "diasLibres": { "type": "number" },
+            "libresConsecutivos": { "type": "boolean" }
+          }
+        },
+        "reglasComplejas": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "empleado": { "type": "string" },
+              "dia": { "type": "string" },
+              "accion": { "type": "string", "enum": ["SOLO", "NUNCA", "RESTRINGIR_HORAS", "PREFERENCIA"] },
+              "turno": { "type": "string" },
+              "startTime": { "type": "string" },
+              "endTime": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "firestore": {
+    "employees": { "schema": "Employee", "description": "List of active employees" },
+    "shiftTypes": { "schema": "ShiftType", "description": "Available shift definitions" },
+    "requests": { "schema": "ScheduleRequest", "description": "Absence and manual leave requests" },
+    "rules": { "schema": "GlobalRule", "description": "Constraint parameters" },
+    "schedules": { "schema": "Schedule", "description": "History of generated schedules" },
+    "configuracion": { "schema": "Configuration", "description": "Scheduling rules and system settings" }
+  }
+}

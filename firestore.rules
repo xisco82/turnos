@@ -1,0 +1,48 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Employees Collection
+    match /employees/{employeeId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn(); // In a production app, restrict to Admin roles
+    }
+
+    // Shift Types Collection
+    match /shiftTypes/{typeId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // Requests Collection
+    match /requests/{requestId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // Rules Collection
+    match /rules/{ruleId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // Schedules Collection
+    match /schedules/{scheduleId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+  }
+}
