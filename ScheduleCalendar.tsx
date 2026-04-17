@@ -69,55 +69,68 @@ const ScheduleCalendar = ({ startOfWeek, scheduleData, onChangeWeek, onExportExc
     }, 0);
 
     return (
-        <div className="bg-white p-4">
-            {afternoonOverloads.length > 0 && (
-                <div className="mb-4 p-4 bg-red-100 border-l-4 border-red-500 text-red-700 animate-pulse">
-                    <p className="font-bold flex items-center">
-                        <span className="mr-2">⚠️ ALARMA:</span> 
-                        {'¡Exceso de personal por la tarde (T > 2)!'}
-                    </p>
-                    <p className="text-sm">Días afectados: {afternoonOverloads.join(', ')}</p>
-                </div>
-            )}
-
-            {(morningDeficiencies.length > 0 || afternoonDeficiencies.length > 0) && (
-                <div className="mb-4 p-4 bg-orange-100 border-l-4 border-orange-500 text-orange-700">
-                    <p className="font-bold flex items-center">
-                        <span className="mr-2">ℹ️ AVISO:</span> 
-                        Personal insuficiente para cumplir los mínimos.
-                    </p>
-                    <div className="text-sm">
-                        {morningDeficiencies.length > 0 && <p>Mañana insuficiente (min 3 o 4): {morningDeficiencies.join(', ')}</p>}
-                        {afternoonDeficiencies.length > 0 && <p>Tarde insuficiente (min 2): {afternoonDeficiencies.join(', ')}</p>}
-                    </div>
-                </div>
-            )}
-            <div className="flex justify-between items-center mb-4">
-                <div className="flex items-center space-x-2">
-                    <button onClick={() => onChangeWeek('prev')} className="p-2 rounded-full hover:bg-gray-100 transition"><ChevronLeftIcon /></button>
-                    <span className="font-semibold text-lg text-gray-700 w-80 text-center">{formatDateRange(startOfWeek)}</span>
-                    <button onClick={() => onChangeWeek('next')} className="p-2 rounded-full hover:bg-gray-100 transition"><ChevronRightIcon /></button>
+        <div className="bg-white">
+            <div className="p-6 border-b border-gray-100 flex flex-col md:flex-row justify-between items-center bg-gray-50/30">
+                <div className="flex items-center space-x-6">
                     <button 
-                        onClick={onForceGenerate}
-                        title="Actualizar Horario"
-                        className="flex items-center space-x-2 bg-gray-200 text-gray-700 px-4 py-2 rounded-lg font-semibold hover:bg-gray-300 transition"
+                        onClick={() => onChangeWeek('prev')} 
+                        className="group flex flex-col items-center justify-center p-2 rounded-2xl bg-white border border-gray-200 shadow-sm hover:border-blue-500 hover:text-blue-600 transition-all active:scale-95"
                     >
-                        <RefreshIcon />
-                        <span>Actualizar</span>
+                        <ChevronLeftIcon />
+                        <span className="text-[10px] font-bold mt-1">ANTERIOR</span>
+                    </button>
+                    
+                    <div className="text-center">
+                        <div className="text-[10px] font-black text-blue-600 uppercase tracking-[0.2em] mb-1">Rango de Fecha</div>
+                        <span className="font-black text-xl text-gray-900 tracking-tight">{formatDateRange(startOfWeek)}</span>
+                    </div>
+
+                    <button 
+                        onClick={() => onChangeWeek('next')} 
+                        className="group flex flex-col items-center justify-center p-2 rounded-2xl bg-white border border-gray-200 shadow-sm hover:border-blue-500 hover:text-blue-600 transition-all active:scale-95"
+                    >
+                        <ChevronRightIcon />
+                        <span className="text-[10px] font-bold mt-1 text-blue-600">SIGUIENTE</span>
                     </button>
                 </div>
-                <div className="flex items-center space-x-2">
-                    <button
-                        onClick={onExportExcel}
-                        className="flex items-center space-x-2 bg-green-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-green-700 transition"
-                    >
-                        <ExcelIcon />
-                        <span>Exportar Excel</span>
-                    </button>
+
+                <div className="flex items-center space-x-3 mt-6 md:mt-0">
+                     <div className="px-4 py-2 bg-gray-100 rounded-xl border border-gray-200">
+                        <div className="text-[8px] font-bold text-gray-400 uppercase">Estado Generación</div>
+                        <div className="text-[10px] font-black text-green-600 flex items-center">
+                            <span className="w-1.5 h-1.5 bg-green-500 rounded-full mr-2 animate-pulse"></span>
+                            AUTOMATIZADO
+                        </div>
+                     </div>
                 </div>
             </div>
-            <div className="overflow-x-auto">
-                <table className="w-full border-collapse">
+
+            <div className="p-6">
+                {afternoonOverloads.length > 0 && (
+                    <div className="mb-4 p-4 bg-red-100 border-l-4 border-red-500 text-red-700 animate-pulse">
+                        <p className="font-bold flex items-center">
+                            <span className="mr-2">⚠️ ALARMA:</span> 
+                            {'¡Exceso de personal por la tarde (T > 2)!'}
+                        </p>
+                        <p className="text-sm">Días afectados: {afternoonOverloads.join(', ')}</p>
+                    </div>
+                )}
+
+                {(morningDeficiencies.length > 0 || afternoonDeficiencies.length > 0) && (
+                    <div className="mb-4 p-4 bg-orange-100 border-l-4 border-orange-500 text-orange-700">
+                        <p className="font-bold flex items-center">
+                            <span className="mr-2">ℹ️ AVISO:</span> 
+                            Personal insuficiente para cumplir los mínimos.
+                        </p>
+                        <div className="text-sm">
+                            {morningDeficiencies.length > 0 && <p>Mañana insuficiente (min 3 o 4): {morningDeficiencies.join(', ')}</p>}
+                            {afternoonDeficiencies.length > 0 && <p>Tarde insuficiente (min 2): {afternoonDeficiencies.join(', ')}</p>}
+                        </div>
+                    </div>
+                )}
+
+                <div className="overflow-x-auto">
+                    <table className="w-full border-collapse">
                     <thead>
                         <tr>
                             <th className="p-3 border border-gray-300 bg-gray-100 text-left font-semibold text-gray-600">Empleado</th>
@@ -128,22 +141,25 @@ const ScheduleCalendar = ({ startOfWeek, scheduleData, onChangeWeek, onExportExc
                         </tr>
                     </thead>
                     <tbody>
-                        {scheduleData.map(({ employeeId, employeeName, shifts }) => {
+                        {scheduleData.map((row) => {
+                            const { employeeId, employeeName, shifts, role } = row;
                             const totalL = shifts.filter(s => s.shift === ShiftConst.Off).length;
                             return (
                             <tr key={employeeId}>
-                                <td className="p-3 border border-gray-200 font-medium text-gray-800">
-                                    {employeeName}
+                                 <td className="p-3 border border-gray-200 font-medium text-gray-800 bg-gray-50/50">
+                                    <div className="text-xs font-bold text-gray-400 mb-1 uppercase tracking-tighter italic">{role}</div>
+                                    <div className="text-sm font-black">{employeeName}</div>
                                 </td>
                                 {shifts.map(({ day, shift }) => {
                                      const details = getShiftDetails(shift);
+                                     const displayText = shift === 'M' ? 'MAÑANA' : shift === 'T' ? 'TARDE' : shift === 'L' ? 'LIBRE' : shift === 'N' ? 'NOCHE' : shift;
                                      return (
                                         <td key={day} className="border border-gray-200 text-center p-0">
                                             <div 
-                                                className={`w-full h-full p-3 font-bold text-sm ${details.color} ${details.textColor} truncate`}
-                                                title={shift === details.label ? shift : `${shift}: ${details.label}`}
+                                                className={`w-full h-full p-4 font-black text-[10px] sm:text-xs ${details.color} ${details.textColor} transition-all duration-300 hover:brightness-95`}
+                                                title={displayText}
                                                 >
-                                                {shift}
+                                                {displayText}
                                             </div>
                                         </td>
                                      )
@@ -179,7 +195,8 @@ const ScheduleCalendar = ({ startOfWeek, scheduleData, onChangeWeek, onExportExc
                 </table>
             </div>
         </div>
-    );
+    </div>
+  );
 };
 
 export default ScheduleCalendar;

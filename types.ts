@@ -10,7 +10,16 @@ export enum DayOfWeek {
   Sunday = 'Domingo',
 }
 
-export type Role = 'Recepcionista' | 'Ayudante' | 'Otro';
+export type Role = 'Jefe' | 'Subjefe' | 'Recepcionista' | 'Ayudante' | 'Conserje';
+
+export interface AppConfig {
+  jefe: string;
+  subjefe: string;
+  recepcionistas: string[];
+  ayudantes: string[];
+  conserje: string;
+  isConfigured: boolean;
+}
 
 export type Rule = {
   [key in DayOfWeek]: Shift;
