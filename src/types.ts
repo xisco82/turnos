@@ -33,7 +33,10 @@ export enum ShiftCode {
   Off = 'L',
   Vacation = 'V',
   Sick = 'B',
-  Holiday = 'F'
+  Holiday = 'F',
+  Extra = 'E',
+  ExtraAfternoon = 'ET',
+  PaidLeave = 'PP'
 }
 
 export interface SpecialRule {
@@ -48,10 +51,12 @@ export interface Employee {
   id: string;
   name: string;
   role: Role;
-  postNightBehaviour: 'Off' | 'Afternoon';
+  postNightBehaviour: 'Afternoon' | 'TwoOff';
   isNightRotationMember: boolean;
   isWeekendRotationMember: boolean;
   fixedWeekendOff: boolean;
+  isCapacityExempt?: boolean;
+  weeklyBasePattern?: { [key in DayOfWeek]?: ShiftCode | 'NONE' };
   specialRules?: SpecialRule[];
 }
 

@@ -28,6 +28,7 @@ interface EmployeeManagerProps {
 export default function EmployeeManager({ employees }: EmployeeManagerProps) {
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
 
   const ROLE_ORDER: Record<string, number> = {
@@ -54,8 +55,11 @@ export default function EmployeeManager({ employees }: EmployeeManagerProps) {
   };
 
   const handleDelete = async (id: string) => {
-    if (window.confirm('¿Estás seguro de que quieres eliminar a este empleado?')) {
+    try {
       await deleteDoc(doc(db, 'employees', id));
+      setConfirmDeleteId(null);
+    } catch (err) {
+      console.error("Error deleting employee:", err);
     }
   };
 
@@ -155,20 +159,37 @@ export default function EmployeeManager({ employees }: EmployeeManagerProps) {
                       </div>
                     </td>
                     <td className="px-6 py-4 text-right">
-                      <div className="flex justify-end gap-1">
-                        <button 
-                          onClick={() => { setEditingEmployee(emp); setIsFormOpen(true); }}
-                          className="p-2 text-slate-400 hover:text-brand-primary hover:bg-blue-50 rounded-lg transition-all"
-                        >
-                          <Edit2 size={16} />
-                        </button>
-                        <button 
-                          onClick={() => handleDelete(emp.id)}
-                          className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
+                      {confirmDeleteId === emp.id ? (
+                        <div className="flex justify-end items-center gap-1 bg-red-50 p-1 rounded-lg border border-red-100 w-fit ml-auto">
+                          <button 
+                            onClick={() => handleDelete(emp.id)}
+                            className="px-3 py-1.5 bg-red-600 text-white rounded text-[10px] font-black uppercase tracking-tight hover:bg-red-700 transition-all shadow-sm"
+                          >
+                            Eliminar
+                          </button>
+                          <button 
+                            onClick={() => setConfirmDeleteId(null)}
+                            className="px-3 py-1.5 bg-white text-slate-500 rounded text-[10px] font-black uppercase tracking-tight hover:bg-slate-100 border border-slate-200 transition-all"
+                          >
+                            No
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex justify-end gap-1">
+                          <button 
+                            onClick={() => { setEditingEmployee(emp); setIsFormOpen(true); }}
+                            className="p-2 text-slate-400 hover:text-brand-primary hover:bg-blue-50 rounded-lg transition-all"
+                          >
+                            <Edit2 size={16} />
+                          </button>
+                          <button 
+                            onClick={() => setConfirmDeleteId(emp.id)}
+                            className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      )}
                     </td>
                   </motion.tr>
                 ))}

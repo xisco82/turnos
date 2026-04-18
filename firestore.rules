@@ -1,48 +1,67 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Helper functions
-    function isSignedIn() {
-      return request.auth != null;
-    }
     
-    function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
-    }
+    // --- 1. GLOBALS & HELPERS ---
+    function isSignedIn() { return request.auth != null; }
+    function docId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
 
-    // Default deny
+    // Catch-all deny
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // Employees Collection
-    match /employees/{employeeId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn(); // In a production app, restrict to Admin roles
+    // --- 2. VALIDATION BLUEPRINTS ---
+
+    function isValidEmployee(data) {
+      return data.keys().hasAll(['name', 'role']) &&
+             data.name is string && data.name.size() <= 50 &&
+             data.role in ['Jefe', '2ª Jefa', 'Recepcionista', 'Ayudante', 'Conserje'];
     }
 
-    // Shift Types Collection
-    match /shiftTypes/{typeId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn();
+    function isValidConfig(data) {
+      return data.keys().hasAll(['capacidad', 'strictCapacityControl']) &&
+             data.capacidad is map &&
+             data.strictCapacityControl is bool;
     }
 
-    // Requests Collection
-    match /requests/{requestId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn();
+    function isValidSchedule(data) {
+      return data.keys().hasAll(['weekNumber', 'year', 'assignments']) &&
+             data.weekNumber is int &&
+             data.year is int &&
+             data.assignments is map;
     }
 
-    // Rules Collection
-    match /rules/{ruleId} {
+    // --- 3. MATCH BLOCKS ---
+
+    match /employees/{id} {
       allow read: if isSignedIn();
-      allow write: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidEmployee(incoming()) && docId(id);
+      allow delete: if isSignedIn();
     }
 
-    // Schedules Collection
-    match /schedules/{scheduleId} {
+    match /configuracion/{id} {
       allow read: if isSignedIn();
-      allow write: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidConfig(incoming()) && docId(id);
+    }
+
+    match /schedules/{id} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidSchedule(incoming()) && docId(id);
+      allow delete: if isSignedIn();
+    }
+
+    match /requests/{id} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && docId(id);
+      allow delete: if isSignedIn();
+    }
+
+    match /shiftTypes/{id} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && docId(id);
     }
   }
 }

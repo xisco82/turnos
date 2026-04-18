@@ -11,6 +11,7 @@
         "isNightRotationMember": { "type": "boolean" },
         "isWeekendRotationMember": { "type": "boolean" },
         "fixedWeekendOff": { "type": "boolean" },
+        "isCapacityExempt": { "type": "boolean" },
         "specialRules": {
           "type": "array",
           "items": {
@@ -85,6 +86,7 @@
         "recepcionistas": { "type": "array", "items": { "type": "string" } },
         "ayudantesRecepcion": { "type": "array", "items": { "type": "string" } },
         "conserjeNoche": { "type": "string" },
+        "strictCapacityControl": { "type": "boolean" },
         "capacidad": { "type": "object" },
         "horariosBase": { "type": "object" },
         "horariosExtra": { "type": "array", "items": { "type": "string" } },

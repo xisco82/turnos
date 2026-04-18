@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Save, Moon, Sun, Coffee, Plus, Trash2 } from 'lucide-react';
+import { X, Save, Moon, Sun, Coffee, Plus, Trash2, Users } from 'lucide-react';
 import { Employee, Role, DayOfWeek, DAYS_ARRAY, ShiftCode, SpecialRule } from '../types.ts';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -13,10 +13,11 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
   const [formData, setFormData] = useState<Omit<Employee, 'id'>>({
     name: '',
     role: Role.Recepcionista,
-    postNightBehaviour: 'Off',
+    postNightBehaviour: 'TwoOff',
     isNightRotationMember: false,
     isWeekendRotationMember: false,
     fixedWeekendOff: false,
+    weeklyBasePattern: {},
     specialRules: []
   });
 
@@ -25,6 +26,8 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
       const { id, ...data } = employee;
       setFormData({
         ...data,
+        postNightBehaviour: data.postNightBehaviour === 'Afternoon' ? 'Afternoon' : 'TwoOff',
+        weeklyBasePattern: data.weeklyBasePattern || {},
         specialRules: data.specialRules || []
       });
     }
@@ -98,7 +101,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                   value={formData.name}
                   onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                   className="w-full bg-slate-50 border-2 border-transparent focus:border-brand-primary focus:bg-white outline-none rounded-xl px-4 py-3 text-sm font-bold transition-all"
-                  placeholder="Ej: Xisco Fernández"
+                  placeholder="Nombre y Apellidos"
                 />
               </div>
 
@@ -163,6 +166,72 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                     </div>
                     <span className="text-xs font-bold text-slate-700">Finde Libre Fijo</span>
                   </label>
+
+                  <label className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 border border-transparent has-[:checked]:border-brand-primary has-[:checked]:bg-blue-50/50 cursor-pointer transition-all">
+                    <input 
+                      type="checkbox" 
+                      className="hidden" 
+                      checked={formData.isCapacityExempt}
+                      onChange={(e) => setFormData({ ...formData, isCapacityExempt: e.target.checked })}
+                    />
+                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all ${formData.isCapacityExempt ? 'bg-purple-500 text-white' : 'bg-slate-200 text-slate-400'}`}>
+                      <Users size={16} />
+                    </div>
+                    <span className="text-xs font-bold text-slate-700">Excepción Capacidad</span>
+                  </label>
+                </div>
+
+                <div className="pt-2">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-4">Patrón Semanal Fijo</label>
+                  <div className="grid grid-cols-7 gap-1">
+                    {DAYS_ARRAY.map(day => {
+                      const current = formData.weeklyBasePattern?.[day] || 'NONE';
+                      return (
+                        <div key={day} className="flex flex-col items-center gap-1.5">
+                          <span className="text-[9px] font-black text-slate-400 uppercase">{day.slice(0, 2)}</span>
+                          <div className="flex flex-col gap-1 w-full">
+                            {[ShiftCode.Morning, ShiftCode.Afternoon, ShiftCode.Off].map(code => (
+                              <button
+                                key={code}
+                                type="button"
+                                onClick={() => {
+                                  const newPattern = { ...(formData.weeklyBasePattern || {}) };
+                                  if (newPattern[day] === code) {
+                                    delete newPattern[day];
+                                  } else {
+                                    newPattern[day] = code;
+                                  }
+                                  setFormData({ ...formData, weeklyBasePattern: newPattern });
+                                }}
+                                className={`py-1.5 rounded-lg text-[10px] font-black transition-all border-2 ${
+                                  current === code 
+                                    ? 'bg-brand-primary text-white border-brand-primary shadow-sm' 
+                                    : 'bg-white text-slate-400 border-slate-100 hover:border-slate-200'
+                                }`}
+                              >
+                                {code}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <p className="mt-2 text-[9px] text-slate-400 font-medium leading-relaxed italic">
+                    * Marca el turno si este empleado siempre debe trabajar en este horario. Déjalo en blanco si el turno es variable.
+                  </p>
+                </div>
+
+                <div className="pt-2">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">Tras trabajar de Noche...</label>
+                  <select 
+                    value={formData.postNightBehaviour}
+                    onChange={(e) => setFormData({ ...formData, postNightBehaviour: e.target.value as any })}
+                    className="w-full bg-slate-50 border-2 border-transparent focus:border-brand-primary focus:bg-white outline-none rounded-xl px-4 py-3 text-sm font-bold transition-all appearance-none"
+                  >
+                    <option value="TwoOff">Tener 2 días libres</option>
+                    <option value="Afternoon">Entrar de Tarde (T)</option>
+                  </select>
                 </div>
               </div>
             </div>

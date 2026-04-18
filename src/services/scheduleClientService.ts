@@ -14,7 +14,7 @@ import {
  * GENERATES SCHEDULE ON CLIENT SIDE
  * Uses configuration from Firestore 'configuracion/reglasTurnos'
  */
-export async function generateScheduleClient(weekNumber: number, year: number, shuffle: boolean = false): Promise<Schedule> {
+export async function generateScheduleClient(weekNumber: number, year: number, shuffle: boolean = false, iterationOffset: number = 0): Promise<Schedule> {
   // 1. Fetch Data
   const employeesSnapshot = await getDocs(collection(db, 'employees'));
   const requestsSnapshot = await getDocs(collection(db, 'requests'));
@@ -23,6 +23,10 @@ export async function generateScheduleClient(weekNumber: number, year: number, s
   
   const employees = employeesSnapshot.docs.map(d => ({ id: d.id, ...d.data() } as Employee));
   const requests = requestsSnapshot.docs.map(d => ({ id: d.id, ...d.data() } as ScheduleRequest));
+
+  // PRIORITY LISTS FROM CONFIG
+  const NOCHES_LIST: string[] = config?.listasPrioridad?.noches || [];
+  const FINDES_LIST: string[] = config?.listasPrioridad?.findes || [];
 
   // 2. Initial Data Structures
   const assignments: { [empId: string]: { [day: string]: string } } = {};
@@ -83,7 +87,25 @@ export async function generateScheduleClient(weekNumber: number, year: number, s
     }
   });
 
-  // 3c. Concierge (Oscar) and Substitution
+  // 3c. Weekly Base Pattern (From Employee profile)
+  employees.forEach(emp => {
+    if (emp.weeklyBasePattern) {
+      DAYS_ARRAY.forEach(day => {
+        const patternShift = emp.weeklyBasePattern?.[day];
+        // Only apply if NO shift is assigned yet (i.e., NOT on vacation/sick)
+        if (patternShift && patternShift !== 'NONE' && !assignments[emp.id][day]) {
+          assignments[emp.id][day] = patternShift;
+          if (patternShift === ShiftCode.Off) {
+            offDaysCount[emp.id]++;
+          } else {
+            workDaysCount[emp.id]++;
+          }
+        }
+      });
+    }
+  });
+
+  // 3d. Concierge and Substitution
   if (config && config.rotacionCoberturaConserje?.activo) {
     const conserje = employees.find(e => e.name.toLowerCase() === config.rotacionCoberturaConserje.conserje?.toLowerCase());
     if (conserje) {
@@ -100,29 +122,59 @@ export async function generateScheduleClient(weekNumber: number, year: number, s
         }
       });
 
-      // Fixed Substitute for this week (with fallback if primary is sick/vacation)
-      const coverageParticipants = config.rotacionCoberturaConserje.empleadosCobertura || [];
+      // Priority list from config
+      const coverageParticipants = NOCHES_LIST;
       if (coverageParticipants.length > 0) {
-        // Use a random starting offset if shuffling, otherwise fixed by weekNumber
-        const startOffset = shuffle ? Math.floor(Math.random() * coverageParticipants.length) : weekNumber;
+        // Base index is deterministic by week + the shuffle iteration
+        const baseOffset = weekNumber + iterationOffset;
         
-        conciergeOffDays.forEach(day => {
+        // 1. For each concierge off day, find a substitute
+        conciergeOffDays.forEach((day, dayIdx) => {
           if (!day) return;
-          
-          let subAssigned = false;
-          // Try to find an available substitute starting from the designated one
+          let selectedSub: Employee | null = null;
+
           for (let i = 0; i < coverageParticipants.length; i++) {
-            const subIdx = (startOffset + i) % coverageParticipants.length;
-            const subName = coverageParticipants[subIdx];
-            const substitute = employees.find(e => e.name.toLowerCase() === subName?.toLowerCase());
+            const subName = coverageParticipants[(baseOffset + i + dayIdx) % coverageParticipants.length];
+            const candidate = employees.find(e => e.name.toUpperCase().includes(subName.toUpperCase()));
             
-            if (substitute) {
-              const current = assignments[substitute.id][day];
-              if (current !== ShiftCode.Sick && current !== ShiftCode.Vacation && !current) {
-                assignments[substitute.id][day] = ShiftCode.Night;
-                workDaysCount[substitute.id]++;
-                subAssigned = true;
+            if (candidate) {
+              const current = assignments[candidate.id][day];
+              const isAvailable = current !== ShiftCode.Sick && current !== ShiftCode.Vacation && !current;
+              
+              if (isAvailable) {
+                selectedSub = candidate;
                 break;
+              }
+            }
+          }
+
+          if (selectedSub) {
+            assignments[selectedSub.id][day] = ShiftCode.Night;
+            workDaysCount[selectedSub.id]++;
+
+            // Handle post-night behaviour for this specific day
+            const nextDayIdx = DAYS_ARRAY.indexOf(day) + 1;
+            if (nextDayIdx < DAYS_ARRAY.length) {
+              const nextDay = DAYS_ARRAY[nextDayIdx];
+              if (selectedSub.postNightBehaviour === 'Afternoon') {
+                // Only assign if slot is empty and not violating sick/vacation
+                if (!assignments[selectedSub.id][nextDay]) {
+                  assignments[selectedSub.id][nextDay] = ShiftCode.Afternoon;
+                  workDaysCount[selectedSub.id]++;
+                }
+              } else {
+                // Force TWO days off as per user request (if possible)
+                assignments[selectedSub.id][nextDay] = ShiftCode.Off;
+                offDaysCount[selectedSub.id]++;
+
+                const dayAfterNextIdx = nextDayIdx + 1;
+                if (dayAfterNextIdx < DAYS_ARRAY.length) {
+                  const dayAfterNext = DAYS_ARRAY[dayAfterNextIdx];
+                  if (!assignments[selectedSub.id][dayAfterNext]) {
+                    assignments[selectedSub.id][dayAfterNext] = ShiftCode.Off;
+                    offDaysCount[selectedSub.id]++;
+                  }
+                }
               }
             }
           }
@@ -133,16 +185,29 @@ export async function generateScheduleClient(weekNumber: number, year: number, s
 
   // 3d. Weekend Off Rotation
   if (config?.rotacionFindeLibre?.activo) {
-    const participants = config.rotacionFindeLibre.empleadosParticipantes || [];
+    // Priority list from config
+    const participants = FINDES_LIST;
     if (participants.length > 0) {
-      // Use random if shuffle, else deterministic
-      const rotIdx = shuffle ? Math.floor(Math.random() * participants.length) : (weekNumber % participants.length);
-      const rotatingName = participants[rotIdx];
-      const rotatingEmp = employees.find(e => e.name.toLowerCase() === rotatingName?.toLowerCase());
-      if (rotatingEmp && offDaysCount[rotatingEmp.id] === 0) {
-        assignments[rotatingEmp.id][DayOfWeek.Saturday] = ShiftCode.Off;
-        assignments[rotatingEmp.id][DayOfWeek.Sunday] = ShiftCode.Off;
-        offDaysCount[rotatingEmp.id] = 2;
+      const baseIdx = (weekNumber + iterationOffset);
+      
+      // Try to find the first available person in the list who isn't already off or working something critical
+      for (let i = 0; i < participants.length; i++) {
+        const rotIdx = (baseIdx + i) % participants.length;
+        const rotatingName = participants[rotIdx];
+        const rotatingEmp = employees.find(e => e.name.toUpperCase().includes(rotatingName.toUpperCase()));
+        
+        if (rotatingEmp && offDaysCount[rotatingEmp.id] === 0) {
+          // Check if they are on leave for Sat/Sun
+          const satStatus = assignments[rotatingEmp.id][DayOfWeek.Saturday];
+          const sunStatus = assignments[rotatingEmp.id][DayOfWeek.Sunday];
+          
+          if (!satStatus && !sunStatus) {
+            assignments[rotatingEmp.id][DayOfWeek.Saturday] = ShiftCode.Off;
+            assignments[rotatingEmp.id][DayOfWeek.Sunday] = ShiftCode.Off;
+            offDaysCount[rotatingEmp.id] = 2;
+            break; // Found our person for the weekend
+          }
+        }
       }
     }
   }
@@ -185,12 +250,9 @@ export async function generateScheduleClient(weekNumber: number, year: number, s
             // Apply hours if specified
             let label = rule.turno;
             if (rule.startTime && rule.endTime) {
-              const start = rule.startTime.split(':')[0];
-              const end = rule.endTime.split(':')[0];
-              label = `${rule.turno}: ${start} a ${end}`;
+              label = `${rule.turno}: ${rule.startTime} a ${rule.endTime}`;
             } else if (rule.startTime) {
-              const start = rule.startTime.split(':')[0];
-              label = `${rule.turno}: desde ${start}`;
+              label = `${rule.turno}: desde ${rule.startTime}`;
             }
             assignments[emp.id][day] = label;
             workDaysCount[emp.id]++;
@@ -260,8 +322,16 @@ export async function generateScheduleClient(weekNumber: number, year: number, s
     // Sorting: First by preference for the current day/shift balance, then by work days.
     // However, available is common for both M and T. We will filter/sort inside the loops.
     
-    let assignedT = 0;
-    let assignedM = 0;
+    // Calculate initial assignments from rules/patterns (TOTAL COUNT)
+    let assignedT = employees.filter(e => {
+      const code = assignments[e.id][day];
+      return typeof code === 'string' && code.startsWith('T');
+    }).length;
+
+    let assignedM = employees.filter(e => {
+      const code = assignments[e.id][day];
+      return typeof code === 'string' && code.startsWith('M');
+    }).length;
 
     const getPreference = (e: Employee, day: DayOfWeek) => {
       const globalP = config?.preferenciasEmpleados?.find((p: any) => p.nombre.toLowerCase() === e.name.toLowerCase() && (!p.diasAfectados || p.diasAfectados.includes(day)));
@@ -284,10 +354,16 @@ export async function generateScheduleClient(weekNumber: number, year: number, s
     });
 
     // Assign Tarde (T)
+    const isStrict = config?.strictCapacityControl ?? true;
+
     sortedForT.forEach(e => {
-      if (assignedT < minT) {
-        // Skip if they strictly prefer Morning (M)
-        if (getPreference(e, day) === ShiftCode.Morning) return;
+      // PROHIBIDO: Strict limit check (includes everyone)
+      if (!isStrict || assignedT < minT) {
+        // If they need the day (to stay at 2 days off), we override preference
+        const needsWork = (offDaysCount[e.id] >= targetOffDays);
+        
+        // Skip if they strictly prefer Morning (M) AND they don't desperately need the day
+        if (getPreference(e, day) === ShiftCode.Morning && !needsWork) return;
 
         // Restriction: noTwoHelpers
         const isHelper = e.role === Role.Ayudante;
@@ -304,16 +380,26 @@ export async function generateScheduleClient(weekNumber: number, year: number, s
 
     // Assign Mañana (M)
     const remaining = available.filter(e => !assignments[e.id][day]);
-    // Sort to prioritize those who PREFER Mañana, or just have fewer work days
+    // Sort to prioritize those who need the work most (to stay at 2 days off)
     const sortedForM = [...remaining].sort((a, b) => {
+      // Priority 1: Those who reached or exceeded target off days (2)
+      const needsA = offDaysCount[a.id] >= targetOffDays ? 0 : 1;
+      const needsB = offDaysCount[b.id] >= targetOffDays ? 0 : 1;
+      if (needsA !== needsB) return needsA - needsB;
+      
+      // Priority 2: Preference
       const prefA = getPreference(a, day) === ShiftCode.Morning ? 0 : 1;
       const prefB = getPreference(b, day) === ShiftCode.Morning ? 0 : 1;
       if (prefA !== prefB) return prefA - prefB;
+      
       return workDaysCount[a.id] - workDaysCount[b.id];
     });
 
     sortedForM.forEach(e => {
-      if (assignedM < minM || workDaysCount[e.id] < targetWorkDays) {
+      // If we are in strict mode, we try to stay within minM
+      // BUT if we MUST assign them to keep them at 2 days off, we might push slightly
+      // unless user said PROHIBIDO for morning too. (User only said PROHIBIDO for Tarde).
+      if (assignedM < minM || (offDaysCount[e.id] >= targetOffDays && assignedM < 5)) {
         assignments[e.id][day] = ShiftCode.Morning;
         workDaysCount[e.id]++;
         assignedM++;

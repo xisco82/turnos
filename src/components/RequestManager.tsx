@@ -24,6 +24,7 @@ interface RequestManagerProps {
 
 export default function RequestManager({ employees, requests }: RequestManagerProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [formData, setFormData] = useState<Omit<ScheduleRequest, 'id'>>({
     employeeId: '',
     startDate: '',
@@ -47,8 +48,11 @@ export default function RequestManager({ employees, requests }: RequestManagerPr
   };
 
   const handleDelete = async (id: string) => {
-    if (window.confirm('¿Eliminar esta petición?')) {
+    try {
       await deleteDoc(doc(db, 'requests', id));
+      setConfirmDeleteId(null);
+    } catch (err) {
+      console.error("Error deleting request:", err);
     }
   };
 
@@ -235,19 +239,44 @@ export default function RequestManager({ employees, requests }: RequestManagerPr
                             {req.reason && <p className="text-[10px] text-slate-500 font-medium mt-1 italic">"{req.reason}"</p>}
                          </div>
                       </div>
-                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
-                        <button 
-                          onClick={() => startEdit(req)}
-                          className={`p-2 rounded-lg transition-all ${isEditing ? 'text-blue-600 bg-white shadow-sm' : 'text-slate-400 hover:text-blue-500 hover:bg-blue-50'}`}
-                        >
-                          <Edit2 size={16} />
-                        </button>
-                        <button 
-                          onClick={() => handleDelete(req.id)}
-                          className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
-                        >
-                          <Trash size={16} />
-                        </button>
+                      <div className="flex items-center gap-2">
+                        {confirmDeleteId === req.id ? (
+                           <div className="flex items-center gap-1 bg-red-50 p-1 rounded-lg border border-red-100">
+                             <button 
+                               onClick={() => handleDelete(req.id)}
+                               className="px-3 py-2 bg-red-600 text-white rounded-md text-[10px] font-black uppercase tracking-tight hover:bg-red-700 transition-all shadow-sm"
+                             >
+                               Confirmar
+                             </button>
+                             <button 
+                               onClick={() => setConfirmDeleteId(null)}
+                               className="px-3 py-2 bg-white text-slate-500 rounded-md text-[10px] font-black uppercase tracking-tight hover:bg-slate-100 border border-slate-200 transition-all"
+                             >
+                               No
+                             </button>
+                           </div>
+                        ) : (
+                          <>
+                            <button 
+                              onClick={() => startEdit(req)}
+                              className={`flex items-center gap-1.5 px-3 py-2 rounded-lg transition-all text-[11px] font-black uppercase tracking-tight ${
+                                isEditing 
+                                  ? 'bg-blue-600 text-white shadow-md' 
+                                  : 'bg-white border border-slate-200 text-slate-600 hover:border-blue-400 hover:text-blue-600 shadow-sm'
+                              }`}
+                            >
+                              <Edit2 size={12} />
+                              {isEditing ? 'Editando' : 'Editar'}
+                            </button>
+                            <button 
+                              onClick={() => setConfirmDeleteId(req.id)}
+                              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white border border-slate-200 text-slate-400 hover:border-red-400 hover:text-red-500 transition-all text-[11px] font-black uppercase tracking-tight shadow-sm"
+                            >
+                              <Trash size={12} />
+                              Eliminar
+                            </button>
+                          </>
+                        )}
                       </div>
                     </motion.div>
                   );
