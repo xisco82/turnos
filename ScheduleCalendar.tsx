@@ -44,7 +44,11 @@ const ScheduleCalendar = ({ startOfWeek, scheduleData, onChangeWeek, onExportExc
                  if (dailyTotals[day]) {
                     dailyTotals[day].T += 1;
                 }
-            }
+            } else if (shift === ShiftConst.LorenaSpecial) {
+                if (dailyTotals[day]) {
+                   dailyTotals[day].T += 0.5;
+               }
+           }
         }
     }
 
@@ -106,29 +110,6 @@ const ScheduleCalendar = ({ startOfWeek, scheduleData, onChangeWeek, onExportExc
             </div>
 
             <div className="p-6">
-                {afternoonOverloads.length > 0 && (
-                    <div className="mb-4 p-4 bg-red-100 border-l-4 border-red-500 text-red-700 animate-pulse">
-                        <p className="font-bold flex items-center">
-                            <span className="mr-2">⚠️ ALARMA:</span> 
-                            {'¡Exceso de personal por la tarde (T > 2)!'}
-                        </p>
-                        <p className="text-sm">Días afectados: {afternoonOverloads.join(', ')}</p>
-                    </div>
-                )}
-
-                {(morningDeficiencies.length > 0 || afternoonDeficiencies.length > 0) && (
-                    <div className="mb-4 p-4 bg-orange-100 border-l-4 border-orange-500 text-orange-700">
-                        <p className="font-bold flex items-center">
-                            <span className="mr-2">ℹ️ AVISO:</span> 
-                            Personal insuficiente para cumplir los mínimos.
-                        </p>
-                        <div className="text-sm">
-                            {morningDeficiencies.length > 0 && <p>Mañana insuficiente (min 3 o 4): {morningDeficiencies.join(', ')}</p>}
-                            {afternoonDeficiencies.length > 0 && <p>Tarde insuficiente (min 2): {afternoonDeficiencies.join(', ')}</p>}
-                        </div>
-                    </div>
-                )}
-
                 <div className="overflow-x-auto">
                     <table className="w-full border-collapse">
                     <thead>
@@ -152,12 +133,21 @@ const ScheduleCalendar = ({ startOfWeek, scheduleData, onChangeWeek, onExportExc
                                 </td>
                                 {shifts.map(({ day, shift }) => {
                                      const details = getShiftDetails(shift);
-                                     const displayText = shift === 'M' ? 'MAÑANA' : shift === 'T' ? 'TARDE' : shift === 'L' ? 'LIBRE' : shift === 'N' ? 'NOCHE' : shift;
+                                     const displayText = shift === ShiftConst.Morning ? 'MAÑANA' : 
+                                                         shift === ShiftConst.Afternoon ? 'TARDE' : 
+                                                         shift === ShiftConst.Off ? 'LIBRE' : 
+                                                         shift === ShiftConst.Night ? 'NOCHE' : 
+                                                         shift === ShiftConst.Vacation ? 'VACACIONES' : 
+                                                         shift === ShiftConst.Paternity ? 'BAJA' :
+                                                         shift === ShiftConst.Petition ? 'PETICIÓN' :
+                                                         shift === ShiftConst.Festive ? 'FESTIVO' :
+                                                         shift === ShiftConst.LorenaSpecial ? '16-20' :
+                                                         shift;
                                      return (
                                         <td key={day} className="border border-gray-200 text-center p-0">
                                             <div 
                                                 className={`w-full h-full p-4 font-black text-[10px] sm:text-xs ${details.color} ${details.textColor} transition-all duration-300 hover:brightness-95`}
-                                                title={displayText}
+                                                title={details.label}
                                                 >
                                                 {displayText}
                                             </div>
@@ -181,8 +171,8 @@ const ScheduleCalendar = ({ startOfWeek, scheduleData, onChangeWeek, onExportExc
                         <tr className="bg-gray-50">
                             <td className="p-2 border border-gray-300 font-semibold text-sm text-gray-700 text-right">Total Tarde (T)</td>
                             {DAYS_OF_WEEK.map(day => (
-                                <td key={day} className={`p-2 border border-gray-300 text-center font-bold text-lg ${dailyTotals[day].T > 2 ? 'bg-red-200 text-red-800' : 'text-orange-800'}`}>
-                                    {dailyTotals[day].T}
+                                <td key={day} className={`p-2 border border-gray-300 text-center font-bold text-lg ${dailyTotals[day].T > 2.5 ? 'bg-red-200 text-red-800' : 'text-orange-800'}`}>
+                                    {dailyTotals[day].T.toString().replace('.', ',')}
                                 </td>
                             ))}
                              <td className="p-2 border border-gray-300"></td>

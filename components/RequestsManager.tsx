@@ -1,153 +1,198 @@
 import React, { useState } from 'react';
-import { Employee, ScheduleRequest, RequestType } from '../types';
-import { PlusIcon, TrashIcon, CalendarIcon } from './Icons';
+import { AppConfig, ScheduleRequest, RequestType } from '../types';
+import { PlusIcon, TrashIcon, SuitcaseIcon, EditIcon } from './Icons';
 
 interface RequestsManagerProps {
-  employees: Employee[];
-  requests: ScheduleRequest[];
-  onAdd: (request: Omit<ScheduleRequest, 'id'>) => void;
-  onDelete: (id: string) => void;
+  config: AppConfig;
+  onUpdateRequests: (requests: ScheduleRequest[]) => void;
 }
 
-export default function RequestsManager({ employees, requests, onAdd, onDelete }: RequestsManagerProps) {
-  const [employeeId, setEmployeeId] = useState('');
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
-  const [type, setType] = useState<RequestType>('Libre');
-  const [reason, setReason] = useState('');
+export default function RequestsManager({ config, onUpdateRequests }: RequestsManagerProps) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [newRequest, setNewRequest] = useState<Partial<ScheduleRequest>>({
+    type: 'Vacaciones',
+    startDate: '',
+    endDate: '',
+    employeeId: '',
+  });
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!employeeId || !startDate || !endDate) return;
-    
-    onAdd({
-      employeeId,
-      startDate,
-      endDate,
-      type,
-      reason
+  const employees = [
+    { id: 'jefe', name: config.jefe, role: 'Jefe' },
+    { id: 'subjefe', name: config.subjefe, role: 'Subjefe' },
+    ...config.recepcionistas.map((name, i) => ({ id: `rec-${i}`, name, role: 'Recepcionista' })),
+    ...config.ayudantes.map((name, i) => ({ id: `ayu-${i}`, name, role: 'Ayudante' })),
+    { id: 'conserje', name: config.conserje, role: 'Conserje' },
+    ...config.extraEmployees.map(e => ({ id: e.id, name: e.name, role: e.role }))
+  ].filter(e => e.name.trim() !== '');
+
+  const handleSaveRequest = () => {
+    if (!newRequest.employeeId || !newRequest.startDate || !newRequest.endDate) return;
+
+    if (editingId) {
+      const updatedRequests = config.requests.map(r => 
+        r.id === editingId 
+          ? { ...r, ...newRequest as ScheduleRequest, id: editingId } 
+          : r
+      );
+      onUpdateRequests(updatedRequests);
+      setEditingId(null);
+    } else {
+      const request: ScheduleRequest = {
+        id: Date.now().toString(),
+        employeeId: newRequest.employeeId,
+        type: newRequest.type as RequestType,
+        startDate: newRequest.startDate,
+        endDate: newRequest.endDate,
+      };
+      onUpdateRequests([...(config.requests || []), request]);
+    }
+
+    setNewRequest({ ...newRequest, startDate: '', endDate: '', employeeId: '' });
+  };
+
+  const startEdit = (req: ScheduleRequest) => {
+    setNewRequest({
+      employeeId: req.employeeId,
+      type: req.type,
+      startDate: req.startDate,
+      endDate: req.endDate
     });
+    setEditingId(req.id);
+    
+    // Scroll to form
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
-    setEmployeeId('');
-    setStartDate('');
-    setEndDate('');
-    setReason('');
+  const cancelEdit = () => {
+    setEditingId(null);
+    setNewRequest({ ...newRequest, startDate: '', endDate: '', employeeId: '' });
+  };
+
+  const removeRequest = (id: string) => {
+    onUpdateRequests(config.requests.filter(r => r.id !== id));
   };
 
   return (
-    <div className="mt-8 pt-8 border-t border-gray-200">
-      <h2 className="text-2xl font-bold text-gray-800 mb-4 flex items-center">
-        <span className="mr-2 p-2 bg-purple-100 text-purple-600 rounded-full"><CalendarIcon /></span>
-        Peticiones y Vacaciones
-      </h2>
-      
-      <form onSubmit={handleSubmit} className="bg-gray-50 p-4 rounded-xl border border-gray-200 mb-6 space-y-4">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Empleado</label>
-            <select 
-              value={employeeId}
-              onChange={(e) => setEmployeeId(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-purple-500 focus:border-purple-500 text-sm"
-              required
-            >
-              <option value="">Seleccionar...</option>
-              {employees.map(emp => (
-                <option key={emp.id} value={emp.id}>{emp.name}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-             <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Tipo</label>
-             <div className="flex space-x-2">
-                {(['Libre', 'Vacaciones'] as RequestType[]).map(t => (
-                    <button
-                        key={t}
-                        type="button"
-                        onClick={() => setType(t)}
-                        className={`flex-1 py-2 text-xs font-bold rounded-lg transition ${type === t ? 'bg-purple-600 text-white' : 'bg-white text-gray-600 border border-gray-300'}`}
-                    >
-                        {t}
-                    </button>
-                ))}
-             </div>
-          </div>
+    <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm">
+      <div className="flex items-center space-x-3 mb-6">
+        <div className="p-2 bg-orange-100 rounded-xl text-orange-600">
+          <SuitcaseIcon />
         </div>
-
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Desde</label>
-            <input 
-              type="date" 
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Hasta</label>
-            <input 
-              type="date" 
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-              required
-            />
-          </div>
-        </div>
-
         <div>
-          <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Motivo (opcional)</label>
+          <h2 className="text-xl font-black text-gray-900 tracking-tight">Peticiones y Vacaciones</h2>
+          <p className="text-xs text-gray-400 font-medium italic">El sistema asignará automáticamente libres a quien esté de vacaciones.</p>
+        </div>
+      </div>
+
+      {/* ADD REQUEST FORM */}
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8 p-4 bg-gray-50 rounded-2xl border border-gray-100">
+        <div className="col-span-1 md:col-span-2">
+          <label className="block text-[8px] font-black text-gray-400 uppercase tracking-widest mb-1 ml-1">Empleado</label>
+          <select 
+            value={newRequest.employeeId}
+            onChange={(e) => setNewRequest({ ...newRequest, employeeId: e.target.value })}
+            className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-orange-500 transition"
+          >
+            <option value="">Seleccionar...</option>
+            {employees.map(e => (
+              <option key={e.id} value={e.id}>{e.name} ({e.role})</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="block text-[8px] font-black text-gray-400 uppercase tracking-widest mb-1 ml-1">Desde</label>
           <input 
-            type="text" 
-            value={reason}
-             onChange={(e) => setReason(e.target.value)}
-            placeholder="Ej: Boda, Cita médica..."
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+            type="date" 
+            value={newRequest.startDate}
+            onChange={(e) => setNewRequest({ ...newRequest, startDate: e.target.value })}
+            className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-orange-500 transition"
           />
         </div>
+        <div>
+          <label className="block text-[8px] font-black text-gray-400 uppercase tracking-widest mb-1 ml-1">Hasta</label>
+          <input 
+            type="date" 
+            value={newRequest.endDate}
+            onChange={(e) => setNewRequest({ ...newRequest, endDate: e.target.value })}
+            className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-orange-500 transition"
+          />
+        </div>
+        <div>
+          <label className="block text-[8px] font-black text-gray-400 uppercase tracking-widest mb-1 ml-1">Tipo</label>
+          <select 
+            value={newRequest.type}
+            onChange={(e) => setNewRequest({ ...newRequest, type: e.target.value as RequestType })}
+            className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-orange-500 transition"
+          >
+            <option value="Vacaciones">Vacaciones</option>
+            <option value="Petición">Petición</option>
+            <option value="Festivo">Festivo</option>
+            <option value="Baja">Baja</option>
+          </select>
+        </div>
+        <div className="flex items-end gap-2">
+          <button 
+            onClick={handleSaveRequest}
+            className={`flex-1 h-[40px] ${editingId ? 'bg-blue-600 hover:bg-blue-700' : 'bg-orange-600 hover:bg-orange-700'} text-white rounded-xl font-black text-xs transition active:scale-95 shadow-lg`}
+          >
+            {editingId ? 'GUARDAR' : 'AÑADIR'}
+          </button>
+          {editingId && (
+            <button 
+              onClick={cancelEdit}
+              className="h-[40px] px-4 bg-gray-200 text-gray-600 rounded-xl font-black text-xs hover:bg-gray-300 transition active:scale-95"
+            >
+              CANCELAR
+            </button>
+          )}
+        </div>
+      </div>
 
-        <button 
-          type="submit"
-          className="w-full py-2 bg-purple-600 text-white rounded-lg font-bold hover:bg-purple-700 transition flex items-center justify-center space-x-2 shadow-sm"
-        >
-          <PlusIcon />
-          <span>Registrar Petición</span>
-        </button>
-      </form>
-
-      <div className="space-y-3 max-h-96 overflow-y-auto pr-2">
-        {requests.sort((a,b) => b.startDate.localeCompare(a.startDate)).map(req => {
-          const emp = employees.find(e => e.id === req.employeeId);
-          return (
-            <div key={req.id} className="bg-white p-3 rounded-lg border border-gray-100 shadow-sm flex items-center justify-between">
-              <div className="flex-grow">
-                <div className="flex items-center space-x-2 mb-1">
-                  <span className={`w-2 h-2 rounded-full ${req.type === 'Vacaciones' ? 'bg-green-500' : 'bg-purple-500'}`}></span>
-                  <span className="font-bold text-gray-800">{emp?.name || 'Desconocido'}</span>
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold uppercase ${req.type === 'Vacaciones' ? 'bg-green-100 text-green-700' : 'bg-purple-100 text-purple-700'}`}>
-                    {req.type}
-                  </span>
-                </div>
-                <div className="text-xs text-gray-500 font-medium">
-                  {new Date(req.startDate).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })} - {new Date(req.endDate).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })}
-                </div>
-                {req.reason && <div className="text-[11px] text-gray-400 italic mt-1 leading-tight">{req.reason}</div>}
-              </div>
-              <button 
-                onClick={() => onDelete(req.id)}
-                className="text-gray-300 hover:text-red-500 transition p-2"
-              >
-                <TrashIcon />
-              </button>
-            </div>
-          );
-        })}
-        {requests.length === 0 && (
-          <div className="text-center py-8 text-gray-400 italic text-sm">
-            No hay peticiones registradas.
+      {/* REQUESTS LIST */}
+      <div className="space-y-3">
+        {config.requests.length === 0 ? (
+          <div className="text-center py-10 bg-gray-50/50 rounded-2xl border-2 border-dashed border-gray-100">
+            <p className="text-sm text-gray-400 italic font-medium">No hay peticiones registradas.</p>
           </div>
+        ) : (
+          config.requests.map(req => {
+            const emp = employees.find(e => e.id === req.employeeId);
+            return (
+              <div key={req.id} className="flex items-center justify-between p-4 bg-white border border-gray-100 rounded-2xl hover:border-orange-200 hover:shadow-md transition-all group">
+                <div className="flex items-center space-x-4">
+                  <div className="w-8 h-8 rounded-full bg-orange-50 flex items-center justify-center text-orange-600 font-bold text-xs">
+                    {emp?.name.charAt(0).toUpperCase()}
+                  </div>
+                  <div>
+                    <div className="text-sm font-black text-gray-900">{emp?.name}</div>
+                    <div className="text-[10px] font-bold text-orange-500 uppercase tracking-widest">{req.type}</div>
+                  </div>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <div className="text-right mr-4">
+                    <div className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Periodo</div>
+                    <div className="text-xs font-bold text-gray-700">{req.startDate} alc{req.endDate}</div>
+                  </div>
+                  <div className="flex items-center space-x-1">
+                    <button 
+                      onClick={() => startEdit(req)}
+                      className="p-2 text-gray-400 hover:text-blue-500 transition opacity-0 group-hover:opacity-100"
+                      title="Editar"
+                    >
+                      <EditIcon />
+                    </button>
+                    <button 
+                      onClick={() => removeRequest(req.id)}
+                      className="p-2 text-gray-400 hover:text-red-500 transition opacity-0 group-hover:opacity-100"
+                      title="Eliminar"
+                    >
+                      <TrashIcon />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })
         )}
       </div>
     </div>

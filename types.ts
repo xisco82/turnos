@@ -10,7 +10,13 @@ export enum DayOfWeek {
   Sunday = 'Domingo',
 }
 
-export type Role = 'Jefe' | 'Subjefe' | 'Recepcionista' | 'Ayudante' | 'Conserje';
+export type Role = 'Jefe' | 'Subjefe' | 'Recepcionista' | 'Ayudante' | 'Conserje' | string;
+
+export interface ExtraEmployee {
+  id: string;
+  name: string;
+  role: string;
+}
 
 export interface AppConfig {
   jefe: string;
@@ -18,7 +24,10 @@ export interface AppConfig {
   recepcionistas: string[];
   ayudantes: string[];
   conserje: string;
+  extraEmployees: ExtraEmployee[];
   isConfigured: boolean;
+  fixedOffDays: Record<string, DayOfWeek[]>;
+  requests: ScheduleRequest[];
 }
 
 export type Rule = {
@@ -27,7 +36,7 @@ export type Rule = {
 
 export type PostNightBehaviour = 'Off' | 'Afternoon';
 
-export type RequestType = 'Libre' | 'Vacaciones';
+export type RequestType = 'Vacaciones' | 'Petición' | 'Festivo' | 'Baja';
 
 export interface ScheduleRequest {
   id: string;

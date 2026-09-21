@@ -1,16 +1,24 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { Employee, Shift, DayOfWeek, ScheduleRow, AppConfig } from './types';
+import { AppConfig, DayOfWeek, Employee, ScheduleRow, Shift } from './types';
 import { 
     DAYS_OF_WEEK, 
     ShiftConst,
-    DEFAULT_CONFIG
+    DEFAULT_CONFIG,
+    getShiftDetails
 } from './constants';
-import ScheduleCalendar from './ScheduleCalendar';
-import SetupForm from './components/SetupForm';
+import { generateWeeklySchedule, getDateForDay } from './scheduleService';
 import { jsPDF } from 'jspdf';
 import 'jspdf-autotable';
-import { RefreshIcon } from './components/Icons';
+import { RefreshIcon, SuitcaseIcon, EditIcon } from './components/Icons';
+import { ChevronLeft, ChevronRight, Settings, Download, MoreHorizontal, User, RotateCcw, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Button } from './components/ui/button';
+import { Card } from './components/ui/card';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './components/ui/table';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from './components/ui/dialog';
+import SetupForm from './components/SetupForm';
+import RequestsManager from './components/RequestsManager';
+import ConfigDialog from './components/ConfigDialog';
 
 // Extend jsPDF for autotable
 declare module 'jspdf' {
@@ -37,9 +45,68 @@ const getWeekNumber = (d: Date): number => {
 
 export default function App() {
   const [currentDate, setCurrentDate] = useState(new Date());
+  const [showRequests, setShowRequests] = useState(false);
+  const [showSetup, setShowSetup] = useState(false);
+  const [isConfigOpen, setIsConfigOpen] = useState(false);
+  
+  // Modal para edición manual de turno puntual
+  const [editingCell, setEditingCell] = useState<{
+    employeeId: string;
+    employeeName: string;
+    day: DayOfWeek;
+    currentShift: Shift;
+  } | null>(null);
+
+  // Overrides manuales guardados por semana: { "2026-week-38": { "rec-0-Lunes": "M" } }
+  const [overridesByWeek, setOverridesByWeek] = useState<Record<string, Record<string, Shift>>>(() => {
+    const saved = localStorage.getItem('turnos_manual_overrides');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error("Error parsing manual overrides", e);
+      }
+    }
+    return {};
+  });
+
+  useEffect(() => {
+    localStorage.setItem('turnos_manual_overrides', JSON.stringify(overridesByWeek));
+  }, [overridesByWeek]);
+
   const [config, setConfig] = useState<AppConfig>(() => {
     const saved = localStorage.getItem('turnos_config');
-    return saved ? JSON.parse(saved) : DEFAULT_CONFIG;
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        
+        // Comprobar si necesitamos plantilla estándar
+        const currentCount = (parsed.recepcionistas?.length || 0) + (parsed.ayudantes?.length || 0) + 3;
+        const hasToniBP = parsed.requests?.some((r: any) => r.id === 'toni-baja-2026' || r.id === 'sample-bp-toni');
+        if (currentCount < 11 || (parsed.ayudantes?.length < 3)) {
+           return DEFAULT_CONFIG;
+        }
+
+        const merged = {
+          ...DEFAULT_CONFIG,
+          ...parsed,
+          recepcionistas: parsed.recepcionistas || DEFAULT_CONFIG.recepcionistas,
+          ayudantes: parsed.ayudantes || DEFAULT_CONFIG.ayudantes,
+          extraEmployees: parsed.extraEmployees || [],
+          fixedOffDays: parsed.fixedOffDays || {},
+          requests: parsed.requests || []
+        };
+        // Inyectar baja de Toni si no existe
+        if (!merged.requests.some((r: any) => r.employeeId === 'rec-1' && r.type === 'Baja')) {
+          merged.requests.push(DEFAULT_CONFIG.requests[0]);
+        }
+        return merged;
+      } catch (e) {
+        console.error("Error parsing saved config", e);
+        return DEFAULT_CONFIG;
+      }
+    }
+    return DEFAULT_CONFIG;
   });
 
   useEffect(() => {
@@ -48,158 +115,54 @@ export default function App() {
 
   const startOfWeek = useMemo(() => getStartOfWeek(currentDate), [currentDate]);
   const weekNumber = useMemo(() => getWeekNumber(startOfWeek), [startOfWeek]);
+  const yearNumber = useMemo(() => startOfWeek.getFullYear(), [startOfWeek]);
+  const currentWeekKey = `${yearNumber}-w${weekNumber}`;
+
+  const currentWeekOverrides = useMemo(() => {
+    return overridesByWeek[currentWeekKey] || {};
+  }, [overridesByWeek, currentWeekKey]);
+
+  const hasManualOverridesThisWeek = useMemo(() => {
+    return Object.keys(currentWeekOverrides).length > 0;
+  }, [currentWeekOverrides]);
 
   const scheduleData = useMemo<ScheduleRow[]>(() => {
-    if (!config.isConfigured) return [];
+    return generateWeeklySchedule(config, weekNumber, startOfWeek, currentWeekOverrides);
+  }, [config, weekNumber, startOfWeek, currentWeekOverrides]);
 
-    const employees: Employee[] = [
-      { id: 'jefe', name: config.jefe, role: 'Jefe', rules: {} as any, wantsPostNightRest: false, postNightBehaviour: 'Off', isNightRotationMember: false, isWeekendRotationMember: false, fixedWeekendOff: false },
-      { id: 'subjefe', name: config.subjefe, role: 'Subjefe', rules: {} as any, wantsPostNightRest: false, postNightBehaviour: 'Off', isNightRotationMember: false, isWeekendRotationMember: false, fixedWeekendOff: false },
-      ...config.recepcionistas.map((name, i) => ({ id: `rec-${i}`, name, role: 'Recepcionista' as any, rules: {} as any, wantsPostNightRest: false, postNightBehaviour: 'Off' as any, isNightRotationMember: false, isWeekendRotationMember: false, fixedWeekendOff: false })),
-      ...config.ayudantes.map((name, i) => ({ id: `ayu-${i}`, name, role: 'Ayudante' as any, rules: {} as any, wantsPostNightRest: false, postNightBehaviour: 'Off' as any, isNightRotationMember: false, isWeekendRotationMember: false, fixedWeekendOff: false })),
-      { id: 'conserje', name: config.conserje, role: 'Conserje', rules: {} as any, wantsPostNightRest: false, postNightBehaviour: 'Off', isNightRotationMember: false, isWeekendRotationMember: false, fixedWeekendOff: false }
-    ];
-
-    const schedule = new Map<string, Map<DayOfWeek, Shift>>();
-    employees.forEach(e => schedule.set(e.id, new Map<DayOfWeek, Shift>()));
-
-    // --- 1. ASIGNAR DÍAS LIBRES (REGLAS FIJAS Y ROTACIÓN) ---
+  const handleApplyShiftOverride = (shift: Shift | null) => {
+    if (!editingCell) return;
+    const cellKey = `${editingCell.employeeId}-${editingCell.day}`;
     
-    // Jefe: Viernes, Sábado
-    schedule.get('jefe')!.set(DayOfWeek.Friday, ShiftConst.Off);
-    schedule.get('jefe')!.set(DayOfWeek.Saturday, ShiftConst.Off);
-
-    // Subjefe: Domingo, Lunes
-    schedule.get('subjefe')!.set(DayOfWeek.Sunday, ShiftConst.Off);
-    schedule.get('subjefe')!.set(DayOfWeek.Monday, ShiftConst.Off);
-
-    // Ayudantes: Mismos días libres
-    const dayPairs: [DayOfWeek, DayOfWeek][] = [
-      [DayOfWeek.Monday, DayOfWeek.Tuesday],
-      [DayOfWeek.Tuesday, DayOfWeek.Wednesday],
-      [DayOfWeek.Wednesday, DayOfWeek.Thursday],
-    ];
-    const ayuPair = dayPairs[weekNumber % dayPairs.length];
-    schedule.get('ayu-0')!.set(ayuPair[0], ShiftConst.Off);
-    schedule.get('ayu-0')!.set(ayuPair[1], ShiftConst.Off);
-    schedule.get('ayu-1')!.set(ayuPair[0], ShiftConst.Off);
-    schedule.get('ayu-1')!.set(ayuPair[1], ShiftConst.Off);
-
-    // Recepcionistas: Rotación de libres y Noches
-    const recDayPairs: [DayOfWeek, DayOfWeek][] = [
-      [DayOfWeek.Wednesday, DayOfWeek.Thursday], // Fixed these to avoid Mon/Tue conflicts
-      [DayOfWeek.Thursday, DayOfWeek.Friday],
-      [DayOfWeek.Friday, DayOfWeek.Saturday],
-      [DayOfWeek.Saturday, DayOfWeek.Sunday],
-    ];
-
-    config.recepcionistas.forEach((_, i) => {
-      const eId = `rec-${i}`;
-      const recSchedule = schedule.get(eId)!;
-      
-      // Night Rotation (Mon/Tue once a month per person)
-      const isNightWeek = (weekNumber % 4) === i;
-      if (isNightWeek) {
-        recSchedule.set(DayOfWeek.Monday, ShiftConst.Night);
-        recSchedule.set(DayOfWeek.Tuesday, ShiftConst.Night);
-        // Requirement from previous turn: "después de su dia de noche que tengan turno de tarde" (specifically for those mentioned)
-        // Global rule now: "rota qué recepcionistas tienen tarde después de noche"
-        recSchedule.set(DayOfWeek.Wednesday, ShiftConst.Afternoon);
-        // Give them 2 days off later in the week
-        recSchedule.set(DayOfWeek.Thursday, ShiftConst.Off);
-        recSchedule.set(DayOfWeek.Friday, ShiftConst.Off);
+    setOverridesByWeek(prev => {
+      const weekMap = { ...(prev[currentWeekKey] || {}) };
+      if (shift === null) {
+        delete weekMap[cellKey];
       } else {
-        // Normal rotation of off days
-        const pair = recDayPairs[(weekNumber + i) % recDayPairs.length];
-        recSchedule.set(pair[0], ShiftConst.Off);
-        recSchedule.set(pair[1], ShiftConst.Off);
+        weekMap[cellKey] = shift;
       }
+      return {
+        ...prev,
+        [currentWeekKey]: weekMap
+      };
     });
+    setEditingCell(null);
+  };
 
-    // Conserje: Noches fijas (excepto sus libres)
-    schedule.get('conserje')!.set(DayOfWeek.Tuesday, ShiftConst.Off);
-    schedule.get('conserje')!.set(DayOfWeek.Wednesday, ShiftConst.Off);
-    // Conserje covers Mon/Tue nights when no recepcionista is on night shift?
-    // No, usually Conserje is the main night guy.
-    // Wait, the prompt says "Conserje de noche (1 nombre)".
-    // If the recepcionista does Mon/Tue night, the Conserje is also there?
-    // Prompt says "recepcionistas 1 vez al mes hagan 2 noches...".
-    // I'll assume they REPLACE the conserje on those 2 nights or work together. 
-    // Usually it's a replacement to let conserje off or just training.
-    // I'll just assign both for now as per rules.
-    schedule.get('conserje')!.set(DayOfWeek.Tuesday, ShiftConst.Off);
-    schedule.get('conserje')!.set(DayOfWeek.Wednesday, ShiftConst.Off);
-
-    // --- 2. ASIGNAR TURNOS FIJOS (CONSERJE NOCHE) ---
-    DAYS_OF_WEEK.forEach(day => {
-      if (schedule.get('conserje')!.get(day) !== ShiftConst.Off) {
-        schedule.get('conserje')!.set(day, ShiftConst.Night);
-      }
+  const handleResetCurrentWeek = () => {
+    setOverridesByWeek(prev => {
+      const copy = { ...prev };
+      delete copy[currentWeekKey];
+      return copy;
     });
-
-    // --- 3. ASIGNAR TURNOS DE RECEPCIÓN (MAÑANA / TARDE) ---
-    DAYS_OF_WEEK.forEach(day => {
-      const isWeekend = day === DayOfWeek.Friday || day === DayOfWeek.Saturday || day === DayOfWeek.Sunday;
-      const minM = isWeekend ? 4 : 3;
-      const minT = 2;
-
-      const workingEmployees = employees.filter(e => e.id !== 'conserje' && schedule.get(e.id)!.get(day) !== ShiftConst.Off);
-
-      // Ayudantes: Nunca juntos en tarde
-      const ayunWorking = workingEmployees.filter(e => e.role === 'Ayudante');
-      
-      // Intentamos asignar management a Mañana primero
-      const managementWorking = workingEmployees.filter(e => e.role === 'Jefe' || e.role === 'Subjefe');
-      managementWorking.forEach(e => schedule.get(e.id)!.set(day, ShiftConst.Morning));
-
-      const staffToAssign = workingEmployees.filter(e => e.role !== 'Jefe' && e.role !== 'Subjefe');
-      
-      // Shuffle staff loosely based on week to rotate T
-      const shuffledStaff = [...staffToAssign].sort((a,b) => {
-         const scoreA = (parseInt(a.id.split('-')[1]) || 0) + weekNumber;
-         const scoreB = (parseInt(b.id.split('-')[1]) || 0) + weekNumber;
-         return scoreA % 4 - scoreB % 4;
-      });
-
-      let currentT = 0;
-      let currentM = managementWorking.length;
-
-      shuffledStaff.forEach(emp => {
-        const isHelper = emp.role === 'Ayudante';
-        const helperInT = workingEmployees.some(e => e.role === 'Ayudante' && schedule.get(e.id)!.get(day) === ShiftConst.Afternoon);
-        
-        if (currentT < minT) {
-          if (isHelper && helperInT) {
-            schedule.get(emp.id)!.set(day, ShiftConst.Morning);
-            currentM++;
-          } else {
-            schedule.get(emp.id)!.set(day, ShiftConst.Afternoon);
-            currentT++;
-          }
-        } else {
-          schedule.get(emp.id)!.set(day, ShiftConst.Morning);
-          currentM++;
-        }
-      });
-    });
-
-    return employees.map(e => ({
-      employeeId: e.id,
-      employeeName: e.name,
-      role: e.role,
-      shifts: DAYS_OF_WEEK.map(day => ({
-        day,
-        shift: schedule.get(e.id)?.get(day) || ShiftConst.Off
-      }))
-    }));
-  }, [config, weekNumber]);
+  };
 
   const handleExportPDF = () => {
     const doc = new jsPDF('landscape');
     doc.setFontSize(20);
-    doc.text(`Turnos de Recepción - Semana ${weekNumber}`, 14, 20);
+    doc.text(`Turnos de Recepción - Semana ${weekNumber} (${yearNumber})`, 14, 20);
     doc.setFontSize(10);
-    doc.text(`${config.jefe} | ${config.subjefe}`, 14, 28);
+    doc.text(`Jefe: ${config.jefe || 'XISCO'} | 2º Jefe: ${config.subjefe || 'ALIZ'} | Conserje: ${config.conserje || 'OSCAR'}`, 14, 28);
 
     const tableData = scheduleData.map(row => [
       row.employeeName,
@@ -211,19 +174,25 @@ export default function App() {
       head: [['Empleado', ...DAYS_OF_WEEK]],
       body: tableData,
       theme: 'grid',
-      headStyles: { fillStyle: '#1f2937' },
+      headStyles: { fillColor: [31, 41, 55] },
       didParseCell: (data: any) => {
         if (data.section === 'body') {
           const val = data.cell.raw;
           if (val === 'M') data.cell.styles.fillColor = [254, 249, 195];
-          if (val === 'T') data.cell.styles.fillColor = [254, 215, 170];
+          if (val === 'T') data.cell.styles.fillColor = [224, 242, 254];
           if (val === 'L') data.cell.styles.fillColor = [243, 244, 246];
-          if (val === 'N') data.cell.styles.fillColor = [191, 219, 254];
+          if (val === 'N') {
+            data.cell.styles.fillColor = [79, 70, 229];
+            data.cell.styles.textColor = [255, 255, 255];
+          }
+          if (val === '16-20') data.cell.styles.fillColor = [237, 233, 254];
+          if (val === 'BP') data.cell.styles.fillColor = [255, 228, 230];
+          if (val === 'V') data.cell.styles.fillColor = [209, 250, 229];
         }
       }
     });
 
-    doc.save(`turnos-semana-${weekNumber}.pdf`);
+    doc.save(`turnos-semana-${weekNumber}-${yearNumber}.pdf`);
   };
 
   const changeWeek = (direction: 'prev' | 'next') => {
@@ -232,69 +201,410 @@ export default function App() {
     setCurrentDate(newDate);
   };
 
-  if (!config.isConfigured) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
-        <SetupForm onSave={setConfig} />
-      </div>
-    );
-  }
-
   return (
-    <div className="min-h-screen bg-gray-50 p-6 lg:p-12">
-      <div className="max-w-7xl mx-auto space-y-8">
-        <div className="flex flex-col md:flex-row justify-between items-end md:items-center bg-white p-6 rounded-3xl border border-gray-100 shadow-sm border-b-4 border-b-blue-600">
-           <div>
-             <div className="flex items-center space-x-3 text-blue-600 mb-1">
-               <span className="text-xs font-black uppercase tracking-widest bg-blue-50 px-2 py-1 rounded">Semana {weekNumber}</span>
-               <span className="h-1 w-8 bg-blue-100 rounded-full"></span>
+    <div className="min-h-screen bg-gray-50 text-slate-950 p-4 lg:p-10 font-sans selection:bg-zinc-900 selection:text-white">
+      <header className="mb-10 flex flex-col md:flex-row md:items-end justify-between border-b border-zinc-200 pb-8 gap-6">
+        <div>
+          <div className="flex items-center gap-3">
+            <h1 className="text-6xl font-black italic tracking-tight uppercase leading-none text-zinc-900">
+              Turnos<span className="text-zinc-300">.</span>
+            </h1>
+            <span className="px-3 py-1 bg-emerald-100 text-emerald-800 text-[10px] font-black uppercase tracking-widest rounded-full flex items-center gap-1.5">
+              <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Reglas Activas (2L/Sem)
+            </span>
+          </div>
+          
+          <div className="mt-4 flex items-center gap-4">
+             <div className="flex flex-col">
+                <span className="text-[10px] font-mono text-zinc-400 uppercase tracking-widest leading-none">Semana</span>
+                <span className="text-2xl font-bold font-mono tracking-tighter mt-1 text-zinc-900">{weekNumber}</span>
              </div>
-             <h1 className="text-3xl font-black text-gray-900 tracking-tight">TURNOS DE RECEPCIÓN</h1>
-           </div>
-           
-           <div className="flex space-x-3 mt-4 md:mt-0">
-             <button 
-                onClick={() => setConfig({ ...config, isConfigured: false })}
-                className="px-4 py-2 border border-gray-200 text-gray-400 hover:text-gray-600 hover:border-gray-400 rounded-xl transition text-sm font-bold flex items-center space-x-2"
-                title="Nueva Configuración"
-             >
-                <RefreshIcon />
-                <span>Configurar</span>
-             </button>
-             <button 
-                onClick={handleExportPDF}
-                className="px-6 py-2 bg-gray-900 text-white rounded-xl font-bold hover:bg-black transition text-sm"
-             >
-                Exportar PDF
-             </button>
-           </div>
+             <div className="h-10 w-[1px] bg-zinc-200"></div>
+             <div className="flex flex-col">
+                <span className="text-[10px] font-mono text-zinc-400 uppercase tracking-widest leading-none">Fecha Inicio</span>
+                <span className="text-2xl font-bold font-mono tracking-tighter mt-1 text-zinc-900">{startOfWeek.toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }).toUpperCase()}</span>
+             </div>
+             <div className="h-10 w-[1px] bg-zinc-200"></div>
+             <div className="flex flex-col">
+                <span className="text-[10px] font-mono text-zinc-400 uppercase tracking-widest leading-none">Año</span>
+                <span className="text-2xl font-bold font-mono tracking-tighter mt-1 text-zinc-900">{yearNumber}</span>
+             </div>
+          </div>
         </div>
 
-        <div className="bg-white rounded-3xl shadow-xl overflow-hidden border border-gray-100">
-          <ScheduleCalendar 
-            startOfWeek={startOfWeek}
-            scheduleData={scheduleData}
-            onChangeWeek={changeWeek}
-            onExportExcel={() => {}} // Legacy prop
-            onForceGenerate={() => {}} // Automated now
-          />
-        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {hasManualOverridesThisWeek && (
+            <Button 
+              variant="outline" 
+              className="h-14 border border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100 text-xs font-bold uppercase tracking-wider px-4 rounded-none flex items-center gap-2"
+              onClick={handleResetCurrentWeek}
+              title="Restablece los turnos de esta semana al cálculo automático de reglas"
+            >
+              <RotateCcw className="h-4 w-4 text-amber-700" />
+              Restablecer Semana
+            </Button>
+          )}
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 opacity-60">
-           <div className="bg-blue-50 p-4 rounded-2xl border border-blue-100">
-              <h4 className="text-[10px] font-bold text-blue-400 uppercase tracking-widest mb-2">Mínimos</h4>
-              <p className="text-xs text-blue-800">L-J: 3M/2T | V-D: 4M/2T</p>
-           </div>
-           <div className="bg-orange-50 p-4 rounded-2xl border border-orange-100">
-              <h4 className="text-[10px] font-bold text-orange-400 uppercase tracking-widest mb-2">Ayudantes</h4>
-              <p className="text-xs text-orange-800">Libres coinciden. No coinciden en Tarde.</p>
-           </div>
-           <div className="bg-gray-100 p-4 rounded-2xl border border-gray-200">
-              <h4 className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Jefatura</h4>
-              <p className="text-xs text-gray-600">Jefe: V-S Libre | 2º Jefe: D-L Libre.</p>
+          <Button variant="ghost" className="h-14 w-14 border border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-50 transition-all rounded-none" onClick={() => changeWeek('prev')}>
+            <ChevronLeft className="h-6 w-6" />
+          </Button>
+          <Button variant="ghost" className="h-14 w-14 border border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-50 transition-all rounded-none" onClick={() => changeWeek('next')}>
+            <ChevronRight className="h-6 w-6" />
+          </Button>
+          
+          <div className="h-14 w-[1px] bg-zinc-200 mx-2 hidden md:block"></div>
+
+          <Button variant="ghost" className="h-14 border border-zinc-200 bg-white text-zinc-500 hover:text-zinc-900 hover:bg-zinc-50 uppercase font-mono text-[10px] tracking-widest px-6 rounded-none" onClick={() => setShowRequests(!showRequests)}>
+            <RefreshIcon className="mr-2 h-3 w-3" /> Peticiones ({config.requests?.length || 0})
+          </Button>
+
+          <Dialog open={isConfigOpen} onOpenChange={setIsConfigOpen}>
+            <DialogTrigger asChild>
+              <Button variant="ghost" className="h-14 border border-zinc-200 bg-white text-zinc-500 hover:text-zinc-900 hover:bg-zinc-50 uppercase font-mono text-[10px] tracking-widest px-6 rounded-none">
+                <Settings className="mr-2 h-4 w-4" /> Ajustes
+              </Button>
+            </DialogTrigger>
+            <ConfigDialog 
+              config={config} 
+              onSave={(newConfig) => {
+                setConfig(newConfig);
+                setIsConfigOpen(false);
+              }} 
+            />
+          </Dialog>
+
+          <Button className="h-14 bg-zinc-900 text-white font-black uppercase tracking-widest text-xs px-8 hover:bg-zinc-800 transition-all rounded-none ring-offset-white focus:ring-2 focus:ring-zinc-900" onClick={handleExportPDF}>
+            Exportar PDF
+          </Button>
+        </div>
+      </header>
+
+      {showRequests && (
+        <div className="mb-10 border border-blue-100 p-6 bg-white shadow-lg shadow-blue-900/5 animate-in fade-in zoom-in duration-300">
+           <RequestsManager 
+              config={config} 
+              onUpdateRequests={(reqs) => setConfig({ ...config, requests: reqs })} 
+            />
+        </div>
+      )}
+
+      {showSetup && (
+        <div className="fixed inset-0 z-50 bg-zinc-900/60 backdrop-blur-sm flex items-center justify-center p-6">
+           <div className="w-full max-w-2xl bg-white border border-zinc-200 p-10 relative shadow-2xl">
+              <SetupForm 
+                initialConfig={config}
+                onSave={(newConfig) => {
+                  setConfig(newConfig);
+                  setShowSetup(false);
+                }} 
+              />
+              <button 
+                onClick={() => setShowSetup(false)}
+                className="absolute top-4 right-4 text-zinc-400 hover:text-zinc-900 transition"
+              >
+                ✕
+              </button>
            </div>
         </div>
+      )}
+
+      {/* MODAL EDICIÓN RÁPIDA DE TURNO */}
+      {editingCell && (
+        <div className="fixed inset-0 z-50 bg-zinc-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-zinc-200 shadow-2xl max-w-md w-full p-6 animate-in zoom-in-95 duration-150">
+            <div className="flex justify-between items-start border-b border-zinc-100 pb-4 mb-4">
+              <div>
+                <h3 className="text-lg font-black uppercase text-zinc-900 tracking-tight">Cambiar Turno</h3>
+                <p className="text-xs text-zinc-500 font-mono mt-0.5">
+                  {editingCell.employeeName} — {editingCell.day}
+                </p>
+              </div>
+              <button 
+                onClick={() => setEditingCell(null)}
+                className="text-zinc-400 hover:text-zinc-900 text-lg leading-none p-1"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-zinc-600 mb-4">
+              Selecciona el turno que deseas asignar a esta casilla:
+            </p>
+
+            <div className="grid grid-cols-2 gap-2 mb-6">
+              <button
+                type="button"
+                onClick={() => handleApplyShiftOverride(ShiftConst.Morning)}
+                className="p-3 bg-yellow-50 hover:bg-yellow-100 border border-yellow-200 text-yellow-900 rounded text-left transition flex items-center justify-between"
+              >
+                <div>
+                  <div className="font-black text-sm">M — Mañana</div>
+                  <div className="text-[10px] text-yellow-700">08:00 - 16:00</div>
+                </div>
+                {editingCell.currentShift === ShiftConst.Morning && <span className="text-xs">✓</span>}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleApplyShiftOverride(ShiftConst.Afternoon)}
+                className="p-3 bg-sky-50 hover:bg-sky-100 border border-sky-200 text-sky-900 rounded text-left transition flex items-center justify-between"
+              >
+                <div>
+                  <div className="font-black text-sm">T — Tarde</div>
+                  <div className="text-[10px] text-sky-700">16:00 - 00:00</div>
+                </div>
+                {editingCell.currentShift === ShiftConst.Afternoon && <span className="text-xs">✓</span>}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleApplyShiftOverride(ShiftConst.Night)}
+                className="p-3 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-900 rounded text-left transition flex items-center justify-between"
+              >
+                <div>
+                  <div className="font-black text-sm">N — Noche</div>
+                  <div className="text-[10px] text-indigo-700">00:00 - 08:00</div>
+                </div>
+                {editingCell.currentShift === ShiftConst.Night && <span className="text-xs">✓</span>}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleApplyShiftOverride(ShiftConst.Off)}
+                className="p-3 bg-zinc-100 hover:bg-zinc-200 border border-zinc-300 text-zinc-900 rounded text-left transition flex items-center justify-between"
+              >
+                <div>
+                  <div className="font-black text-sm">L — Libre</div>
+                  <div className="text-[10px] text-zinc-600">Día de descanso</div>
+                </div>
+                {editingCell.currentShift === ShiftConst.Off && <span className="text-xs">✓</span>}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleApplyShiftOverride(ShiftConst.LorenaSpecial)}
+                className="p-3 bg-violet-50 hover:bg-violet-100 border border-violet-200 text-violet-900 rounded text-left transition flex items-center justify-between"
+              >
+                <div>
+                  <div className="font-black text-sm">16-20 — Refuerzo</div>
+                  <div className="text-[10px] text-violet-700">Tarde corta</div>
+                </div>
+                {editingCell.currentShift === ShiftConst.LorenaSpecial && <span className="text-xs">✓</span>}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleApplyShiftOverride(ShiftConst.Vacation)}
+                className="p-3 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-900 rounded text-left transition flex items-center justify-between"
+              >
+                <div>
+                  <div className="font-black text-sm">V — Vacaciones</div>
+                  <div className="text-[10px] text-emerald-700">Permiso retribuido</div>
+                </div>
+                {editingCell.currentShift === ShiftConst.Vacation && <span className="text-xs">✓</span>}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleApplyShiftOverride(ShiftConst.Paternity)}
+                className="p-3 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-900 rounded text-left transition flex items-center justify-between"
+              >
+                <div>
+                  <div className="font-black text-sm">BP — Baja</div>
+                  <div className="text-[10px] text-rose-700">Incapacidad / Baja</div>
+                </div>
+                {editingCell.currentShift === ShiftConst.Paternity && <span className="text-xs">✓</span>}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleApplyShiftOverride(ShiftConst.Festive)}
+                className="p-3 bg-orange-50 hover:bg-orange-100 border border-orange-200 text-orange-900 rounded text-left transition flex items-center justify-between"
+              >
+                <div>
+                  <div className="font-black text-sm">F — Festivo</div>
+                  <div className="text-[10px] text-orange-700">Compensación</div>
+                </div>
+                {editingCell.currentShift === ShiftConst.Festive && <span className="text-xs">✓</span>}
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between border-t border-zinc-100 pt-4">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => handleApplyShiftOverride(null)}
+                className="text-xs text-zinc-500 hover:text-zinc-900"
+              >
+                Restaurar automático
+              </Button>
+              <Button
+                type="button"
+                onClick={() => setEditingCell(null)}
+                className="bg-zinc-900 text-white text-xs px-6 rounded-none hover:bg-zinc-800"
+              >
+                Cerrar
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 gap-10">
+        <section>
+          <div className="overflow-x-auto border border-zinc-200 bg-white shadow-sm">
+            <Table className="border-collapse">
+              <TableHeader className="bg-zinc-50/80">
+                <TableRow className="border-b border-zinc-200 hover:bg-transparent">
+                  <TableHead className="w-[190px] text-[10px] font-mono uppercase tracking-[0.2em] text-zinc-400 py-6 border-r border-zinc-200">Empleado</TableHead>
+                  {DAYS_OF_WEEK.map(day => (
+                    <TableHead key={day} className="text-center text-[10px] font-mono uppercase tracking-[0.2em] text-zinc-400 border-r border-zinc-200/50">
+                      {day.slice(0, 3)}
+                      <div className="mt-2 text-xl font-bold text-zinc-900 tracking-tighter">
+                        {getDateForDay(startOfWeek, day).split('-')[2]}
+                      </div>
+                    </TableHead>
+                  ))}
+                  <TableHead className="w-[90px] text-center text-[10px] font-mono uppercase tracking-[0.2em] text-zinc-400">Total L</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {scheduleData.map((row) => {
+                  const offCount = row.shifts.filter(s => s.shift === ShiftConst.Off).length;
+                  const isLorena = row.employeeName.toUpperCase().includes('LORENA');
+                  const hasAbsence = row.shifts.some(s => [ShiftConst.Paternity, ShiftConst.Vacation].includes(s.shift as any));
+                  const isExactTarget = isLorena ? offCount === 4 : hasAbsence ? true : offCount === 2;
+
+                  return (
+                    <TableRow key={row.employeeId} className="border-b border-zinc-100 group transition-all duration-200">
+                      <TableCell className="border-r border-zinc-200 bg-zinc-50/30 py-4 group-hover:bg-zinc-100/50">
+                        <div className="flex flex-col">
+                          <span className="text-sm font-black uppercase tracking-tight text-zinc-950">{row.employeeName}</span>
+                          <span className="text-[9px] font-mono text-zinc-400 uppercase tracking-widest mt-0.5">{row.role}</span>
+                        </div>
+                      </TableCell>
+                      {row.shifts.map((s, idx) => {
+                        const isOverridden = Boolean(currentWeekOverrides[`${row.employeeId}-${s.day}`]);
+                        
+                        const colorMap: Record<string, string> = {
+                           'M': 'bg-yellow-50 text-yellow-800 border-yellow-200 hover:bg-yellow-100',
+                           'T': 'bg-sky-50 text-sky-800 border-sky-200 hover:bg-sky-100',
+                           'N': 'bg-indigo-600 text-white border-indigo-700 hover:bg-indigo-700 font-black',
+                           'L': 'bg-zinc-100 text-zinc-500 border-zinc-200 hover:bg-zinc-200',
+                           'V': 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100',
+                           'BP': 'bg-rose-50 text-rose-800 border-rose-200 hover:bg-rose-100',
+                           'P': 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100',
+                           'F': 'bg-orange-50 text-orange-800 border-orange-200 hover:bg-orange-100',
+                           '16-20': 'bg-violet-50 text-violet-800 border-violet-200 hover:bg-violet-100'
+                        };
+                        const technicalStyle = colorMap[s.shift] || "bg-white text-zinc-400";
+                        
+                        return (
+                          <TableCell 
+                            key={idx} 
+                            className="p-0 border-r border-zinc-100 cursor-pointer relative select-none"
+                            onClick={() => setEditingCell({
+                              employeeId: row.employeeId,
+                              employeeName: row.employeeName,
+                              day: s.day,
+                              currentShift: s.shift
+                            })}
+                            title={`Clic para modificar turno de ${row.employeeName} el ${s.day}`}
+                          >
+                             <div className={`h-16 flex items-center justify-center text-xs font-black transition-all border-b border-transparent ${technicalStyle}`}>
+                                {s.shift}
+                                {isOverridden && (
+                                  <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-amber-500 rounded-full" title="Modificado manualmente"></span>
+                                )}
+                             </div>
+                          </TableCell>
+                        );
+                      })}
+                      <TableCell className="text-center bg-zinc-50/30 font-mono text-lg font-black">
+                        <span className={`px-2 py-0.5 rounded text-sm ${isExactTarget ? 'text-zinc-700 bg-zinc-100' : 'text-amber-600 bg-amber-50 font-bold'}`}>
+                          {offCount} L
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        </section>
+
+        {/* Technical Summary Widgets */}
+        <section className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2">
+          {DAYS_OF_WEEK.map(day => {
+            const counts = scheduleData.reduce((acc, row) => {
+              const shift = row.shifts.find(s => s.day === day)?.shift;
+              if (shift === ShiftConst.Morning) acc.m++;
+              if (shift === ShiftConst.Afternoon) acc.t++;
+              if (shift === ShiftConst.LorenaSpecial) acc.t += 0.5;
+              if (shift === ShiftConst.Night) acc.n++;
+              return acc;
+            }, { m: 0, t: 0, n: 0 });
+
+            const isWeekend = [DayOfWeek.Friday, DayOfWeek.Saturday, DayOfWeek.Sunday].includes(day);
+            const targetM = isWeekend ? 4 : 3;
+            const targetT = 2;
+
+            const isMOk = counts.m >= targetM;
+            const isTOk = counts.t >= targetT;
+            const isNOk = counts.n === 1;
+
+            return (
+              <div key={day} className="bg-white border border-zinc-200 p-4 transition-all shadow-sm">
+                <div className="flex justify-between items-center mb-3">
+                  <p className="text-[10px] font-mono text-zinc-500 uppercase tracking-[0.2em] font-bold">{day}</p>
+                  <span className={`w-2 h-2 rounded-full ${isMOk && isTOk && isNOk ? 'bg-emerald-500' : 'bg-amber-400'}`}></span>
+                </div>
+                <div className="space-y-3">
+                   <div className="flex justify-between items-baseline">
+                      <span className="text-[10px] font-mono text-zinc-400 uppercase">M (Mañanas)</span>
+                      <span className={`text-lg font-black ${!isMOk ? 'text-rose-600' : 'text-zinc-900'}`}>
+                        {counts.m} <span className="text-[9px] font-normal text-zinc-400">/ min {targetM}</span>
+                      </span>
+                   </div>
+                   <div className="flex justify-between items-baseline">
+                      <span className="text-[10px] font-mono text-zinc-400 uppercase">T (Tardes)</span>
+                      <span className={`text-lg font-black ${!isTOk ? 'text-rose-600' : 'text-zinc-900'}`}>
+                        {counts.t} <span className="text-[9px] font-normal text-zinc-400">/ 2</span>
+                      </span>
+                   </div>
+                   <div className="h-[1px] w-full bg-zinc-100"></div>
+                   <div className="flex justify-between items-baseline">
+                      <span className="text-[10px] font-mono text-zinc-400 uppercase">N (Noches)</span>
+                      <span className={`text-lg font-black ${!isNOk ? 'text-rose-600' : 'text-zinc-900'}`}>
+                        {counts.n} <span className="text-[9px] font-normal text-zinc-400">/ 1</span>
+                      </span>
+                   </div>
+                </div>
+              </div>
+            );
+          })}
+        </section>
       </div>
+
+      <footer className="mt-16 border-t border-zinc-200 pt-8 flex flex-col md:flex-row justify-between items-center opacity-70 gap-6">
+         <div className="flex flex-wrap items-center gap-8">
+            <div className="flex flex-col">
+              <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-400">Mínimos Requeridos</span>
+              <span className="text-xs font-bold text-zinc-900 mt-1 italic">3M / 2T (L-J) — 4M / 2T (V-D) + 1N</span>
+            </div>
+            <div className="flex flex-col">
+              <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-400">Libres por Empleado</span>
+              <span className="text-xs font-bold text-zinc-900 mt-1 italic">2 Días Consecutivos (Rotación Semanal)</span>
+            </div>
+            <div className="flex flex-col">
+              <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-400">Edición</span>
+              <span className="text-xs font-bold text-zinc-900 mt-1 italic">Haz clic en cualquier celda para cambiar turno</span>
+            </div>
+         </div>
+         <p className="text-[10px] font-mono text-zinc-400 uppercase tracking-widest">
+           Sistema de Turnos Automatizado v3.0
+         </p>
+      </footer>
     </div>
   );
 }
