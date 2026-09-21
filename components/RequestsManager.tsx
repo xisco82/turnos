@@ -16,12 +16,13 @@ export default function RequestsManager({ config, onUpdateRequests }: RequestsMa
     employeeId: '',
   });
 
+  const cleanAyudantes = (config.ayudantes || []).filter(name => name.trim().toUpperCase() !== 'LORENA');
   const employees = [
     { id: 'jefe', name: config.jefe, role: 'Jefe' },
-    { id: 'subjefe', name: config.subjefe, role: 'Subjefe' },
-    ...config.recepcionistas.map((name, i) => ({ id: `rec-${i}`, name, role: 'Recepcionista' })),
-    ...config.ayudantes.map((name, i) => ({ id: `ayu-${i}`, name, role: 'Ayudante' })),
+    { id: 'subjefe', name: config.subjefe, role: '2º Jefe' },
     { id: 'conserje', name: config.conserje, role: 'Conserje' },
+    ...config.recepcionistas.map((name, i) => ({ id: `rec-${i}`, name, role: 'Recepcionista' })),
+    ...cleanAyudantes.map((name, i) => ({ id: `ayu-${i}`, name, role: 'Ayudante' })),
     ...config.extraEmployees.map(e => ({ id: e.id, name: e.name, role: e.role }))
   ].filter(e => e.name.trim() !== '');
 

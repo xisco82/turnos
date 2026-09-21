@@ -27,7 +27,10 @@ export interface AppConfig {
   extraEmployees: ExtraEmployee[];
   isConfigured: boolean;
   fixedOffDays: Record<string, DayOfWeek[]>;
+  fixedShifts?: Record<string, Partial<Record<DayOfWeek, Shift>>>;
   requests: ScheduleRequest[];
+  postNightBehaviour: PostNightBehaviour; // 'Afternoon' | 'Off'
+  employeePostNightPreferences?: Record<string, PostNightBehaviour>;
 }
 
 export type Rule = {

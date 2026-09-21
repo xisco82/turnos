@@ -44,11 +44,7 @@ const ScheduleCalendar = ({ startOfWeek, scheduleData, onChangeWeek, onExportExc
                  if (dailyTotals[day]) {
                     dailyTotals[day].T += 1;
                 }
-            } else if (shift === ShiftConst.LorenaSpecial) {
-                if (dailyTotals[day]) {
-                   dailyTotals[day].T += 0.5;
-               }
-           }
+            }
         }
     }
 
@@ -141,7 +137,7 @@ const ScheduleCalendar = ({ startOfWeek, scheduleData, onChangeWeek, onExportExc
                                                          shift === ShiftConst.Paternity ? 'BAJA' :
                                                          shift === ShiftConst.Petition ? 'PETICIÓN' :
                                                          shift === ShiftConst.Festive ? 'FESTIVO' :
-                                                         shift === ShiftConst.LorenaSpecial ? '16-20' :
+                                                         
                                                          shift;
                                      return (
                                         <td key={day} className="border border-gray-200 text-center p-0">

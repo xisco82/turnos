@@ -20,7 +20,6 @@ export const ShiftConst = {
   Paternity: 'BP',
   Petition: 'P',
   Festive: 'F',
-  LorenaSpecial: '16-20',
 } as const;
 
 export const STANDARD_SHIFTS: Shift[] = Object.values(ShiftConst);
@@ -34,7 +33,6 @@ const SHIFT_DETAILS_MAP: { [key: string]: { label: string; color: string; textCo
   [ShiftConst.Paternity]: { label: 'Baja', color: 'bg-pink-200', textColor: 'text-pink-800' },
   [ShiftConst.Petition]: { label: 'Petición', color: 'bg-purple-200', textColor: 'text-purple-800' },
   [ShiftConst.Festive]: { label: 'Festivo', color: 'bg-red-100', textColor: 'text-red-800' },
-  [ShiftConst.LorenaSpecial]: { label: 'Tarde (16-20)', color: 'bg-teal-200', textColor: 'text-teal-900' },
 };
 
 export const CUSTOM_SHIFT_STYLE = { label: 'Personalizado', color: 'bg-purple-200', textColor: 'text-purple-800' };
@@ -51,12 +49,19 @@ export const getShiftDetails = (shift: Shift) => {
 export const DEFAULT_CONFIG: AppConfig = {
     jefe: 'XISCO',
     subjefe: 'ALIZ',
-    recepcionistas: ['JAVI', 'TONI', 'MIRIAM', 'CARLOS', 'JOSEP'],
-    ayudantes: ['INÉS', 'LORENA', 'JAKELINE'],
     conserje: 'OSCAR',
+    recepcionistas: ['JAVI', 'TONI', 'MIRIAM', 'CARLOS', 'JOSEP'],
+    ayudantes: ['INÉS', 'JAKELINE'],
     extraEmployees: [],
     isConfigured: true,
-    fixedOffDays: {},
+    fixedOffDays: {
+        jefe: [DayOfWeek.Friday, DayOfWeek.Saturday],
+        subjefe: [DayOfWeek.Sunday, DayOfWeek.Monday],
+        conserje: [DayOfWeek.Sunday, DayOfWeek.Monday]
+    },
+    fixedShifts: {},
+    postNightBehaviour: 'Afternoon',
+    employeePostNightPreferences: {},
     requests: [
         {
             id: 'toni-baja-2026',

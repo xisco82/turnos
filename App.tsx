@@ -7,15 +7,15 @@ import {
     DEFAULT_CONFIG,
     getShiftDetails
 } from './constants';
-import { generateWeeklySchedule, getDateForDay } from './scheduleService';
+import { generateWeeklySchedule, getDateForDay, getPostNightSequenceDays } from './scheduleService';
 import { jsPDF } from 'jspdf';
 import 'jspdf-autotable';
 import { RefreshIcon, SuitcaseIcon, EditIcon } from './components/Icons';
-import { ChevronLeft, ChevronRight, Settings, Download, MoreHorizontal, User, RotateCcw, CheckCircle2, AlertCircle } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Settings, Download, MoreHorizontal, User, RotateCcw, CheckCircle2, AlertCircle, Moon } from 'lucide-react';
 import { Button } from './components/ui/button';
 import { Card } from './components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './components/ui/table';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from './components/ui/dialog';
+import { Dialog, DialogTrigger } from './components/ui/dialog';
 import SetupForm from './components/SetupForm';
 import RequestsManager from './components/RequestsManager';
 import ConfigDialog from './components/ConfigDialog';
@@ -56,6 +56,7 @@ export default function App() {
     day: DayOfWeek;
     currentShift: Shift;
   } | null>(null);
+  const [customManualShift, setCustomManualShift] = useState('');
 
   // Overrides manuales guardados por semana: { "2026-week-38": { "rec-0-Lunes": "M" } }
   const [overridesByWeek, setOverridesByWeek] = useState<Record<string, Record<string, Shift>>>(() => {
@@ -80,20 +81,27 @@ export default function App() {
       try {
         const parsed = JSON.parse(saved);
         
-        // Comprobar si necesitamos plantilla estándar
-        const currentCount = (parsed.recepcionistas?.length || 0) + (parsed.ayudantes?.length || 0) + 3;
-        const hasToniBP = parsed.requests?.some((r: any) => r.id === 'toni-baja-2026' || r.id === 'sample-bp-toni');
-        if (currentCount < 11 || (parsed.ayudantes?.length < 3)) {
-           return DEFAULT_CONFIG;
-        }
+        // Filtrar a Lorena de ayudantes
+        const rawAyudantes = parsed.ayudantes || DEFAULT_CONFIG.ayudantes;
+        const cleanAyudantes = rawAyudantes.filter((name: string) => name.trim().toUpperCase() !== 'LORENA');
 
         const merged = {
           ...DEFAULT_CONFIG,
           ...parsed,
+          conserje: parsed.conserje || DEFAULT_CONFIG.conserje,
           recepcionistas: parsed.recepcionistas || DEFAULT_CONFIG.recepcionistas,
-          ayudantes: parsed.ayudantes || DEFAULT_CONFIG.ayudantes,
+          ayudantes: cleanAyudantes,
           extraEmployees: parsed.extraEmployees || [],
-          fixedOffDays: parsed.fixedOffDays || {},
+          fixedOffDays: {
+            ...(DEFAULT_CONFIG.fixedOffDays || {}),
+            ...(parsed.fixedOffDays || {})
+          },
+          fixedShifts: {
+            ...(DEFAULT_CONFIG.fixedShifts || {}),
+            ...(parsed.fixedShifts || {})
+          },
+          postNightBehaviour: parsed.postNightBehaviour || DEFAULT_CONFIG.postNightBehaviour || 'Afternoon',
+          employeePostNightPreferences: parsed.employeePostNightPreferences || {},
           requests: parsed.requests || []
         };
         // Inyectar baja de Toni si no existe
@@ -117,6 +125,8 @@ export default function App() {
   const weekNumber = useMemo(() => getWeekNumber(startOfWeek), [startOfWeek]);
   const yearNumber = useMemo(() => startOfWeek.getFullYear(), [startOfWeek]);
   const currentWeekKey = `${yearNumber}-w${weekNumber}`;
+
+  const conserjeOffDays = config.fixedOffDays?.['conserje'] || [];
 
   const currentWeekOverrides = useMemo(() => {
     return overridesByWeek[currentWeekKey] || {};
@@ -179,15 +189,17 @@ export default function App() {
         if (data.section === 'body') {
           const val = data.cell.raw;
           if (val === 'M') data.cell.styles.fillColor = [254, 249, 195];
-          if (val === 'T') data.cell.styles.fillColor = [224, 242, 254];
-          if (val === 'L') data.cell.styles.fillColor = [243, 244, 246];
-          if (val === 'N') {
+          else if (val === 'T') data.cell.styles.fillColor = [224, 242, 254];
+          else if (val === 'L') data.cell.styles.fillColor = [243, 244, 246];
+          else if (val === 'N') {
             data.cell.styles.fillColor = [79, 70, 229];
             data.cell.styles.textColor = [255, 255, 255];
           }
-          if (val === '16-20') data.cell.styles.fillColor = [237, 233, 254];
-          if (val === 'BP') data.cell.styles.fillColor = [255, 228, 230];
-          if (val === 'V') data.cell.styles.fillColor = [209, 250, 229];
+          else if (val === 'BP') data.cell.styles.fillColor = [255, 228, 230];
+          else if (val === 'V') data.cell.styles.fillColor = [209, 250, 229];
+          else {
+            data.cell.styles.fillColor = [204, 251, 241];
+          }
         }
       }
     });
@@ -205,12 +217,22 @@ export default function App() {
     <div className="min-h-screen bg-gray-50 text-slate-950 p-4 lg:p-10 font-sans selection:bg-zinc-900 selection:text-white">
       <header className="mb-10 flex flex-col md:flex-row md:items-end justify-between border-b border-zinc-200 pb-8 gap-6">
         <div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <h1 className="text-6xl font-black italic tracking-tight uppercase leading-none text-zinc-900">
               Turnos<span className="text-zinc-300">.</span>
             </h1>
             <span className="px-3 py-1 bg-emerald-100 text-emerald-800 text-[10px] font-black uppercase tracking-widest rounded-full flex items-center gap-1.5">
               <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Reglas Activas (2L/Sem)
+            </span>
+            <span className="px-3 py-1 bg-amber-50 border border-amber-200 text-amber-950 text-[10px] font-black uppercase tracking-widest rounded-full flex items-center gap-1.5">
+              <Moon className="w-3 h-3 text-amber-600" /> Días a Cubrir Noche: {conserjeOffDays.length > 0 ? conserjeOffDays.join(', ') : 'Ninguno'}
+            </span>
+            <span className={`px-3 py-1 text-[10px] font-black uppercase tracking-widest rounded-full flex items-center gap-1.5 ${
+              (config.postNightBehaviour || 'Afternoon') === 'Afternoon'
+                ? 'bg-sky-100 text-sky-900 border border-sky-200'
+                : 'bg-indigo-100 text-indigo-900 border border-indigo-200'
+            }`}>
+              <Moon className="w-3 h-3" /> Post-Noche: {(config.postNightBehaviour || 'Afternoon') === 'Afternoon' ? 'Turno de Tarde' : '2 Libres Consecutivos'}
             </span>
           </div>
           
@@ -310,138 +332,199 @@ export default function App() {
 
       {/* MODAL EDICIÓN RÁPIDA DE TURNO */}
       {editingCell && (
-        <div className="fixed inset-0 z-50 bg-zinc-900/40 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white border border-zinc-200 shadow-2xl max-w-md w-full p-6 animate-in zoom-in-95 duration-150">
-            <div className="flex justify-between items-start border-b border-zinc-100 pb-4 mb-4">
+        <div className="fixed inset-0 z-50 bg-zinc-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border-2 border-zinc-300 shadow-2xl max-w-lg w-full p-6 animate-in zoom-in-95 duration-150">
+            <div className="flex justify-between items-start border-b border-zinc-200 pb-4 mb-4">
               <div>
-                <h3 className="text-lg font-black uppercase text-zinc-900 tracking-tight">Cambiar Turno</h3>
-                <p className="text-xs text-zinc-500 font-mono mt-0.5">
-                  {editingCell.employeeName} — {editingCell.day}
+                <h3 className="text-xl font-black uppercase text-zinc-900 tracking-tight">Cambiar Turno</h3>
+                <p className="text-sm font-bold text-zinc-600 mt-1">
+                  {editingCell.employeeName} — <span className="text-indigo-600">{editingCell.day}</span>
                 </p>
               </div>
               <button 
                 onClick={() => setEditingCell(null)}
-                className="text-zinc-400 hover:text-zinc-900 text-lg leading-none p-1"
+                className="text-zinc-400 hover:text-zinc-900 text-2xl font-bold leading-none p-1"
               >
                 ✕
               </button>
             </div>
 
-            <p className="text-xs text-zinc-600 mb-4">
+            <p className="text-sm font-medium text-zinc-600 mb-4">
               Selecciona el turno que deseas asignar a esta casilla:
             </p>
 
-            <div className="grid grid-cols-2 gap-2 mb-6">
+            <div className="grid grid-cols-2 gap-3 mb-6">
               <button
                 type="button"
                 onClick={() => handleApplyShiftOverride(ShiftConst.Morning)}
-                className="p-3 bg-yellow-50 hover:bg-yellow-100 border border-yellow-200 text-yellow-900 rounded text-left transition flex items-center justify-between"
+                className="p-3 bg-amber-100 hover:bg-amber-200 border-2 border-amber-300 text-amber-950 rounded-md text-left transition flex items-center justify-between"
               >
-                <div>
-                  <div className="font-black text-sm">M — Mañana</div>
-                  <div className="text-[10px] text-yellow-700">08:00 - 16:00</div>
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl font-black w-8 text-center text-amber-900">M</span>
+                  <div>
+                    <div className="font-black text-sm uppercase">Mañana</div>
+                    <div className="text-xs text-amber-800 font-medium">08:00 - 16:00</div>
+                  </div>
                 </div>
-                {editingCell.currentShift === ShiftConst.Morning && <span className="text-xs">✓</span>}
+                {editingCell.currentShift === ShiftConst.Morning && <span className="text-base font-black">✓</span>}
               </button>
 
               <button
                 type="button"
                 onClick={() => handleApplyShiftOverride(ShiftConst.Afternoon)}
-                className="p-3 bg-sky-50 hover:bg-sky-100 border border-sky-200 text-sky-900 rounded text-left transition flex items-center justify-between"
+                className="p-3 bg-sky-100 hover:bg-sky-200 border-2 border-sky-300 text-sky-950 rounded-md text-left transition flex items-center justify-between"
               >
-                <div>
-                  <div className="font-black text-sm">T — Tarde</div>
-                  <div className="text-[10px] text-sky-700">16:00 - 00:00</div>
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl font-black w-8 text-center text-sky-900">T</span>
+                  <div>
+                    <div className="font-black text-sm uppercase">Tarde</div>
+                    <div className="text-xs text-sky-800 font-medium">16:00 - 00:00</div>
+                  </div>
                 </div>
-                {editingCell.currentShift === ShiftConst.Afternoon && <span className="text-xs">✓</span>}
+                {editingCell.currentShift === ShiftConst.Afternoon && <span className="text-base font-black">✓</span>}
               </button>
 
               <button
                 type="button"
                 onClick={() => handleApplyShiftOverride(ShiftConst.Night)}
-                className="p-3 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-900 rounded text-left transition flex items-center justify-between"
+                className="p-3 bg-indigo-700 hover:bg-indigo-800 border-2 border-indigo-900 text-white rounded-md text-left transition flex items-center justify-between"
               >
-                <div>
-                  <div className="font-black text-sm">N — Noche</div>
-                  <div className="text-[10px] text-indigo-700">00:00 - 08:00</div>
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl font-black w-8 text-center text-white">N</span>
+                  <div>
+                    <div className="font-black text-sm uppercase">Noche</div>
+                    <div className="text-xs text-indigo-200 font-medium">00:00 - 08:00</div>
+                  </div>
                 </div>
-                {editingCell.currentShift === ShiftConst.Night && <span className="text-xs">✓</span>}
+                {editingCell.currentShift === ShiftConst.Night && <span className="text-base font-black">✓</span>}
               </button>
 
               <button
                 type="button"
                 onClick={() => handleApplyShiftOverride(ShiftConst.Off)}
-                className="p-3 bg-zinc-100 hover:bg-zinc-200 border border-zinc-300 text-zinc-900 rounded text-left transition flex items-center justify-between"
+                className="p-3 bg-slate-200 hover:bg-slate-300 border-2 border-slate-300 text-slate-800 rounded-md text-left transition flex items-center justify-between"
               >
-                <div>
-                  <div className="font-black text-sm">L — Libre</div>
-                  <div className="text-[10px] text-zinc-600">Día de descanso</div>
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl font-black w-8 text-center text-slate-600">L</span>
+                  <div>
+                    <div className="font-black text-sm uppercase">Libre</div>
+                    <div className="text-xs text-slate-600 font-medium">Descanso</div>
+                  </div>
                 </div>
-                {editingCell.currentShift === ShiftConst.Off && <span className="text-xs">✓</span>}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleApplyShiftOverride(ShiftConst.LorenaSpecial)}
-                className="p-3 bg-violet-50 hover:bg-violet-100 border border-violet-200 text-violet-900 rounded text-left transition flex items-center justify-between"
-              >
-                <div>
-                  <div className="font-black text-sm">16-20 — Refuerzo</div>
-                  <div className="text-[10px] text-violet-700">Tarde corta</div>
-                </div>
-                {editingCell.currentShift === ShiftConst.LorenaSpecial && <span className="text-xs">✓</span>}
+                {editingCell.currentShift === ShiftConst.Off && <span className="text-base font-black">✓</span>}
               </button>
 
               <button
                 type="button"
                 onClick={() => handleApplyShiftOverride(ShiftConst.Vacation)}
-                className="p-3 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-900 rounded text-left transition flex items-center justify-between"
+                className="p-3 bg-emerald-100 hover:bg-emerald-200 border-2 border-emerald-300 text-emerald-950 rounded-md text-left transition flex items-center justify-between"
               >
-                <div>
-                  <div className="font-black text-sm">V — Vacaciones</div>
-                  <div className="text-[10px] text-emerald-700">Permiso retribuido</div>
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl font-black w-8 text-center text-emerald-900">V</span>
+                  <div>
+                    <div className="font-black text-sm uppercase">Vacaciones</div>
+                    <div className="text-xs text-emerald-800 font-medium">Vacaciones</div>
+                  </div>
                 </div>
-                {editingCell.currentShift === ShiftConst.Vacation && <span className="text-xs">✓</span>}
+                {editingCell.currentShift === ShiftConst.Vacation && <span className="text-base font-black">✓</span>}
               </button>
 
               <button
                 type="button"
                 onClick={() => handleApplyShiftOverride(ShiftConst.Paternity)}
-                className="p-3 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-900 rounded text-left transition flex items-center justify-between"
+                className="p-3 bg-rose-100 hover:bg-rose-200 border-2 border-rose-300 text-rose-950 rounded-md text-left transition flex items-center justify-between"
               >
-                <div>
-                  <div className="font-black text-sm">BP — Baja</div>
-                  <div className="text-[10px] text-rose-700">Incapacidad / Baja</div>
+                <div className="flex items-center gap-3">
+                  <span className="text-xl font-black w-8 text-center text-rose-900">BP</span>
+                  <div>
+                    <div className="font-black text-sm uppercase">Baja Médica</div>
+                    <div className="text-xs text-rose-800 font-medium">Incapacidad</div>
+                  </div>
                 </div>
-                {editingCell.currentShift === ShiftConst.Paternity && <span className="text-xs">✓</span>}
+                {editingCell.currentShift === ShiftConst.Paternity && <span className="text-base font-black">✓</span>}
               </button>
 
               <button
                 type="button"
                 onClick={() => handleApplyShiftOverride(ShiftConst.Festive)}
-                className="p-3 bg-orange-50 hover:bg-orange-100 border border-orange-200 text-orange-900 rounded text-left transition flex items-center justify-between"
+                className="p-3 bg-orange-100 hover:bg-orange-200 border-2 border-orange-300 text-orange-950 rounded-md text-left transition flex items-center justify-between"
               >
-                <div>
-                  <div className="font-black text-sm">F — Festivo</div>
-                  <div className="text-[10px] text-orange-700">Compensación</div>
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl font-black w-8 text-center text-orange-900">F</span>
+                  <div>
+                    <div className="font-black text-sm uppercase">Festivo</div>
+                    <div className="text-xs text-orange-800 font-medium">Compensación</div>
+                  </div>
                 </div>
-                {editingCell.currentShift === ShiftConst.Festive && <span className="text-xs">✓</span>}
+                {editingCell.currentShift === ShiftConst.Festive && <span className="text-base font-black">✓</span>}
               </button>
             </div>
 
-            <div className="flex items-center justify-between border-t border-zinc-100 pt-4">
+            {/* AÑADIR HORARIO MANUAL PERSONALIZADO */}
+            <div className="mt-2 pt-4 border-t border-zinc-200">
+              <label className="block text-xs font-black uppercase text-zinc-800 tracking-wider mb-2 flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
+                  <span className="text-teal-600">✏️</span> Horario Manual / Turno Personalizado
+                </span>
+                <span className="text-[10px] text-zinc-400 font-bold uppercase tracking-normal">Introduce horas libres</span>
+              </label>
+              <div className="flex gap-2 mb-2">
+                <input 
+                  type="text"
+                  value={customManualShift}
+                  onChange={(e) => setCustomManualShift(e.target.value)}
+                  placeholder="Ej: 10-18, 09-17, 12-20, 07-15..."
+                  className="flex-1 px-3 py-2 border-2 border-zinc-300 rounded-md text-sm font-black text-zinc-900 focus:outline-none focus:border-teal-600 uppercase"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && customManualShift.trim()) {
+                      handleApplyShiftOverride(customManualShift.trim() as Shift);
+                    }
+                  }}
+                />
+                <Button
+                  type="button"
+                  disabled={!customManualShift.trim()}
+                  onClick={() => handleApplyShiftOverride(customManualShift.trim() as Shift)}
+                  className="bg-teal-700 hover:bg-teal-800 text-white font-black text-xs px-4 py-2 uppercase tracking-wider rounded-md"
+                >
+                  Asignar Horario
+                </Button>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[10px] text-zinc-400 font-bold uppercase mr-1">Rápidos:</span>
+                {['10-18', '09-17', '12-20', '07-15', '11-19', '14-22'].map(preset => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => {
+                      setCustomManualShift(preset);
+                      handleApplyShiftOverride(preset as Shift);
+                    }}
+                    className={`px-2 py-1 rounded text-xs font-black border transition ${
+                      editingCell.currentShift === preset
+                        ? 'bg-teal-600 text-white border-teal-700'
+                        : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-800 border-zinc-200'
+                    }`}
+                  >
+                    {preset}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between border-t border-zinc-200 pt-4 mt-4">
               <Button
                 type="button"
                 variant="ghost"
                 onClick={() => handleApplyShiftOverride(null)}
-                className="text-xs text-zinc-500 hover:text-zinc-900"
+                className="text-xs font-bold text-zinc-600 hover:text-zinc-900"
               >
-                Restaurar automático
+                Restablecer a automático
               </Button>
               <Button
                 type="button"
                 onClick={() => setEditingCell(null)}
-                className="bg-zinc-900 text-white text-xs px-6 rounded-none hover:bg-zinc-800"
+                className="bg-zinc-900 text-white text-sm font-bold px-6 py-2 rounded hover:bg-zinc-800"
               >
                 Cerrar
               </Button>
@@ -450,78 +533,141 @@ export default function App() {
         </div>
       )}
 
+      {/* LEYENDA CLARA DE TURNOS CON LETRAS GRANDES */}
+      <div className="mb-4 bg-white border border-zinc-200 p-4 shadow-xs">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <span className="text-xs font-black uppercase tracking-wider text-zinc-400">Leyenda:</span>
+          <div className="flex flex-wrap items-center gap-3 md:gap-4">
+            <div className="flex items-center gap-2">
+              <span className="w-8 h-8 rounded bg-amber-100 border-2 border-amber-300 text-amber-950 font-black text-base flex items-center justify-center">M</span>
+              <span className="text-xs font-bold text-zinc-700">Mañana (08-16)</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="w-8 h-8 rounded bg-sky-100 border-2 border-sky-300 text-sky-950 font-black text-base flex items-center justify-center">T</span>
+              <span className="text-xs font-bold text-zinc-700">Tarde (16-00)</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="w-8 h-8 rounded bg-indigo-700 border-2 border-indigo-900 text-white font-black text-base flex items-center justify-center">N</span>
+              <span className="text-xs font-bold text-zinc-700">Noche (00-08)</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="w-8 h-8 rounded bg-slate-200 border-2 border-slate-300 text-slate-700 font-black text-base flex items-center justify-center">L</span>
+              <span className="text-xs font-bold text-zinc-700">Libre</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="px-2 h-8 rounded bg-teal-50 border-2 border-teal-400 text-teal-950 font-black text-xs flex items-center justify-center">10-18</span>
+              <span className="text-xs font-bold text-zinc-700">Horario Manual</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="px-2 h-8 rounded bg-rose-100 border-2 border-rose-300 text-rose-950 font-black text-xs flex items-center justify-center">BP</span>
+              <span className="text-xs font-bold text-zinc-700">Baja</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="w-8 h-8 rounded bg-emerald-100 border-2 border-emerald-300 text-emerald-950 font-black text-base flex items-center justify-center">V</span>
+              <span className="text-xs font-bold text-zinc-700">Vacaciones</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 gap-10">
         <section>
-          <div className="overflow-x-auto border border-zinc-200 bg-white shadow-sm">
-            <Table className="border-collapse">
-              <TableHeader className="bg-zinc-50/80">
-                <TableRow className="border-b border-zinc-200 hover:bg-transparent">
-                  <TableHead className="w-[190px] text-[10px] font-mono uppercase tracking-[0.2em] text-zinc-400 py-6 border-r border-zinc-200">Empleado</TableHead>
+          <div className="overflow-x-auto border-2 border-zinc-300 bg-white shadow-md">
+            <Table className="border-collapse w-full">
+              <TableHeader className="bg-zinc-100/90">
+                <TableRow className="border-b-2 border-zinc-300 hover:bg-transparent">
+                  <TableHead className="w-[230px] min-w-[210px] text-xs font-black uppercase tracking-wider text-zinc-700 py-6 px-4 border-r-2 border-zinc-300">
+                    Empleado
+                  </TableHead>
                   {DAYS_OF_WEEK.map(day => (
-                    <TableHead key={day} className="text-center text-[10px] font-mono uppercase tracking-[0.2em] text-zinc-400 border-r border-zinc-200/50">
-                      {day.slice(0, 3)}
-                      <div className="mt-2 text-xl font-bold text-zinc-900 tracking-tighter">
+                    <TableHead key={day} className="text-center py-4 px-2 border-r-2 border-zinc-200">
+                      <div className="text-xs md:text-sm font-black uppercase tracking-wider text-zinc-800">
+                        {day}
+                      </div>
+                      <div className="mt-1 text-2xl md:text-3xl font-black text-zinc-950 tracking-tight">
                         {getDateForDay(startOfWeek, day).split('-')[2]}
                       </div>
                     </TableHead>
                   ))}
-                  <TableHead className="w-[90px] text-center text-[10px] font-mono uppercase tracking-[0.2em] text-zinc-400">Total L</TableHead>
+                  <TableHead className="w-[100px] text-center text-xs font-black uppercase tracking-wider text-zinc-700 py-4 px-2">
+                    Total L
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {scheduleData.map((row) => {
                   const offCount = row.shifts.filter(s => s.shift === ShiftConst.Off).length;
-                  const isLorena = row.employeeName.toUpperCase().includes('LORENA');
                   const hasAbsence = row.shifts.some(s => [ShiftConst.Paternity, ShiftConst.Vacation].includes(s.shift as any));
-                  const isExactTarget = isLorena ? offCount === 4 : hasAbsence ? true : offCount === 2;
+                  const isExactTarget = hasAbsence ? true : offCount === 2;
 
                   return (
-                    <TableRow key={row.employeeId} className="border-b border-zinc-100 group transition-all duration-200">
-                      <TableCell className="border-r border-zinc-200 bg-zinc-50/30 py-4 group-hover:bg-zinc-100/50">
+                    <TableRow key={row.employeeId} className="border-b-2 border-zinc-200 group hover:bg-zinc-50/70 transition-colors">
+                      <TableCell className="border-r-2 border-zinc-300 bg-zinc-50/70 py-4 px-4">
                         <div className="flex flex-col">
-                          <span className="text-sm font-black uppercase tracking-tight text-zinc-950">{row.employeeName}</span>
-                          <span className="text-[9px] font-mono text-zinc-400 uppercase tracking-widest mt-0.5">{row.role}</span>
+                          <span className="text-base md:text-lg font-black uppercase tracking-tight text-zinc-950">
+                            {row.employeeName}
+                          </span>
+                          <span className="text-xs font-bold text-zinc-500 uppercase tracking-wide mt-0.5">
+                            {row.role}
+                          </span>
                         </div>
                       </TableCell>
                       {row.shifts.map((s, idx) => {
                         const isOverridden = Boolean(currentWeekOverrides[`${row.employeeId}-${s.day}`]);
                         
+                        // Estilos de alto contraste, letras gigantes y colores muy vivos
                         const colorMap: Record<string, string> = {
-                           'M': 'bg-yellow-50 text-yellow-800 border-yellow-200 hover:bg-yellow-100',
-                           'T': 'bg-sky-50 text-sky-800 border-sky-200 hover:bg-sky-100',
-                           'N': 'bg-indigo-600 text-white border-indigo-700 hover:bg-indigo-700 font-black',
-                           'L': 'bg-zinc-100 text-zinc-500 border-zinc-200 hover:bg-zinc-200',
-                           'V': 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100',
-                           'BP': 'bg-rose-50 text-rose-800 border-rose-200 hover:bg-rose-100',
-                           'P': 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100',
-                           'F': 'bg-orange-50 text-orange-800 border-orange-200 hover:bg-orange-100',
-                           '16-20': 'bg-violet-50 text-violet-800 border-violet-200 hover:bg-violet-100'
+                           'M': 'bg-amber-100 text-amber-950 border-2 border-amber-300 hover:bg-amber-200 shadow-xs',
+                           'T': 'bg-sky-100 text-sky-950 border-2 border-sky-300 hover:bg-sky-200 shadow-xs',
+                           'N': 'bg-indigo-700 text-white border-2 border-indigo-900 hover:bg-indigo-800 shadow-md font-black',
+                           'L': 'bg-slate-100 text-slate-500 border-2 border-slate-200/90 hover:bg-slate-200',
+                           'V': 'bg-emerald-100 text-emerald-950 border-2 border-emerald-300 hover:bg-emerald-200 shadow-xs',
+                           'BP': 'bg-rose-100 text-rose-950 border-2 border-rose-300 hover:bg-rose-200 shadow-xs',
+                           'P': 'bg-amber-200 text-amber-950 border-2 border-amber-400 hover:bg-amber-300 shadow-xs',
+                           'F': 'bg-orange-100 text-orange-950 border-2 border-orange-300 hover:bg-orange-200 shadow-xs'
                         };
-                        const technicalStyle = colorMap[s.shift] || "bg-white text-zinc-400";
+                        const technicalStyle = colorMap[s.shift] || "bg-teal-50 text-teal-950 border-2 border-teal-400 hover:bg-teal-100 shadow-xs";
                         
+                        // Tamaño de letra adaptable para horarios manuales o estándar
+                        const fontSizeClass = s.shift.length > 5
+                          ? 'text-xs md:text-sm font-black px-1 text-center leading-tight'
+                          : s.shift.length >= 3
+                          ? 'text-sm md:text-base font-black px-1 text-center'
+                          : s.shift === 'BP' 
+                          ? 'text-xl md:text-2xl font-black'
+                          : 'text-2xl md:text-3xl font-black';
+
                         return (
                           <TableCell 
                             key={idx} 
-                            className="p-0 border-r border-zinc-100 cursor-pointer relative select-none"
-                            onClick={() => setEditingCell({
-                              employeeId: row.employeeId,
-                              employeeName: row.employeeName,
-                              day: s.day,
-                              currentShift: s.shift
-                            })}
-                            title={`Clic para modificar turno de ${row.employeeName} el ${s.day}`}
+                            className="p-1 border-r-2 border-zinc-200 cursor-pointer relative select-none"
+                            onClick={() => {
+                              const isStandard = [ShiftConst.Morning, ShiftConst.Afternoon, ShiftConst.Night, ShiftConst.Off, ShiftConst.Vacation, ShiftConst.Paternity, ShiftConst.Festive].includes(s.shift as any);
+                              setCustomManualShift(isStandard ? '' : s.shift);
+                              setEditingCell({
+                                employeeId: row.employeeId,
+                                employeeName: row.employeeName,
+                                day: s.day,
+                                currentShift: s.shift
+                              });
+                            }}
+                            title={`Clic para modificar turno o añadir horario manual para ${row.employeeName} el ${s.day}`}
                           >
-                             <div className={`h-16 flex items-center justify-center text-xs font-black transition-all border-b border-transparent ${technicalStyle}`}>
+                             <div className={`h-20 min-h-[76px] rounded-sm flex items-center justify-center transition-all ${fontSizeClass} ${technicalStyle}`}>
                                 {s.shift}
                                 {isOverridden && (
-                                  <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-amber-500 rounded-full" title="Modificado manualmente"></span>
+                                  <span className="absolute top-2 right-2 w-2 h-2 bg-amber-500 rounded-full ring-2 ring-white" title="Modificado manualmente"></span>
                                 )}
                              </div>
                           </TableCell>
                         );
                       })}
-                      <TableCell className="text-center bg-zinc-50/30 font-mono text-lg font-black">
-                        <span className={`px-2 py-0.5 rounded text-sm ${isExactTarget ? 'text-zinc-700 bg-zinc-100' : 'text-amber-600 bg-amber-50 font-bold'}`}>
+                      <TableCell className="text-center bg-zinc-50/70 border-l-2 border-zinc-300 p-2">
+                        <span className={`inline-block px-3 py-1.5 rounded text-base md:text-lg font-black ${
+                          isExactTarget 
+                            ? 'text-zinc-800 bg-zinc-200 border border-zinc-300' 
+                            : 'text-amber-800 bg-amber-100 border border-amber-300'
+                        }`}>
                           {offCount} L
                         </span>
                       </TableCell>
@@ -534,13 +680,12 @@ export default function App() {
         </section>
 
         {/* Technical Summary Widgets */}
-        <section className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2">
+        <section className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
           {DAYS_OF_WEEK.map(day => {
             const counts = scheduleData.reduce((acc, row) => {
               const shift = row.shifts.find(s => s.day === day)?.shift;
               if (shift === ShiftConst.Morning) acc.m++;
               if (shift === ShiftConst.Afternoon) acc.t++;
-              if (shift === ShiftConst.LorenaSpecial) acc.t += 0.5;
               if (shift === ShiftConst.Night) acc.n++;
               return acc;
             }, { m: 0, t: 0, n: 0 });
@@ -549,34 +694,34 @@ export default function App() {
             const targetM = isWeekend ? 4 : 3;
             const targetT = 2;
 
-            const isMOk = counts.m >= targetM;
-            const isTOk = counts.t >= targetT;
+            const isMOk = counts.m <= targetM;
+            const isTOk = counts.t <= targetT;
             const isNOk = counts.n === 1;
 
             return (
-              <div key={day} className="bg-white border border-zinc-200 p-4 transition-all shadow-sm">
+              <div key={day} className="bg-white border-2 border-zinc-300 p-4 transition-all shadow-sm rounded-sm">
                 <div className="flex justify-between items-center mb-3">
-                  <p className="text-[10px] font-mono text-zinc-500 uppercase tracking-[0.2em] font-bold">{day}</p>
-                  <span className={`w-2 h-2 rounded-full ${isMOk && isTOk && isNOk ? 'bg-emerald-500' : 'bg-amber-400'}`}></span>
+                  <p className="text-xs md:text-sm font-black text-zinc-900 uppercase tracking-wider">{day}</p>
+                  <span className={`w-3 h-3 rounded-full ${isMOk && isTOk && isNOk ? 'bg-emerald-500 ring-2 ring-emerald-200' : 'bg-rose-500 ring-2 ring-rose-200'}`} title={isMOk && isTOk && isNOk ? 'Cupos cumplidos' : 'Excede cupo máximo'}></span>
                 </div>
                 <div className="space-y-3">
                    <div className="flex justify-between items-baseline">
-                      <span className="text-[10px] font-mono text-zinc-400 uppercase">M (Mañanas)</span>
-                      <span className={`text-lg font-black ${!isMOk ? 'text-rose-600' : 'text-zinc-900'}`}>
-                        {counts.m} <span className="text-[9px] font-normal text-zinc-400">/ min {targetM}</span>
+                      <span className="text-xs font-bold text-zinc-600 uppercase">M (Mañana)</span>
+                      <span className={`text-2xl font-black ${!isMOk ? 'text-rose-600 font-black' : 'text-zinc-900'}`}>
+                        {counts.m} <span className="text-xs font-bold text-zinc-400">/ máx {targetM}</span>
                       </span>
                    </div>
                    <div className="flex justify-between items-baseline">
-                      <span className="text-[10px] font-mono text-zinc-400 uppercase">T (Tardes)</span>
-                      <span className={`text-lg font-black ${!isTOk ? 'text-rose-600' : 'text-zinc-900'}`}>
-                        {counts.t} <span className="text-[9px] font-normal text-zinc-400">/ 2</span>
+                      <span className="text-xs font-bold text-zinc-600 uppercase">T (Tarde)</span>
+                      <span className={`text-2xl font-black ${!isTOk ? 'text-rose-600 font-black' : 'text-zinc-900'}`}>
+                        {counts.t} <span className="text-xs font-bold text-zinc-400">/ máx 2</span>
                       </span>
                    </div>
-                   <div className="h-[1px] w-full bg-zinc-100"></div>
+                   <div className="h-[2px] w-full bg-zinc-200"></div>
                    <div className="flex justify-between items-baseline">
-                      <span className="text-[10px] font-mono text-zinc-400 uppercase">N (Noches)</span>
-                      <span className={`text-lg font-black ${!isNOk ? 'text-rose-600' : 'text-zinc-900'}`}>
-                        {counts.n} <span className="text-[9px] font-normal text-zinc-400">/ 1</span>
+                      <span className="text-xs font-bold text-zinc-600 uppercase">N (Noche)</span>
+                      <span className={`text-2xl font-black ${!isNOk ? 'text-rose-600' : 'text-zinc-900'}`}>
+                        {counts.n} <span className="text-xs font-bold text-zinc-400">/ 1</span>
                       </span>
                    </div>
                 </div>
@@ -589,8 +734,8 @@ export default function App() {
       <footer className="mt-16 border-t border-zinc-200 pt-8 flex flex-col md:flex-row justify-between items-center opacity-70 gap-6">
          <div className="flex flex-wrap items-center gap-8">
             <div className="flex flex-col">
-              <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-400">Mínimos Requeridos</span>
-              <span className="text-xs font-bold text-zinc-900 mt-1 italic">3M / 2T (L-J) — 4M / 2T (V-D) + 1N</span>
+              <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-400">Cupos Máximos</span>
+              <span className="text-xs font-bold text-zinc-900 mt-1 italic">Máx 3M / 2T (L-J) — Máx 4M / 2T (V-D) + 1N</span>
             </div>
             <div className="flex flex-col">
               <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-400">Libres por Empleado</span>
@@ -598,7 +743,7 @@ export default function App() {
             </div>
             <div className="flex flex-col">
               <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-400">Edición</span>
-              <span className="text-xs font-bold text-zinc-900 mt-1 italic">Haz clic en cualquier celda para cambiar turno</span>
+              <span className="text-xs font-bold text-zinc-900 mt-1 italic">Haz clic en cualquier celda para asignar o crear horario manual</span>
             </div>
          </div>
          <p className="text-[10px] font-mono text-zinc-400 uppercase tracking-widest">
