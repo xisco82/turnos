@@ -5,9 +5,10 @@ import { PlusIcon, TrashIcon, SuitcaseIcon, EditIcon } from './Icons';
 interface RequestsManagerProps {
   config: AppConfig;
   onUpdateRequests: (requests: ScheduleRequest[]) => void;
+  onOpenSharePortal?: () => void;
 }
 
-export default function RequestsManager({ config, onUpdateRequests }: RequestsManagerProps) {
+export default function RequestsManager({ config, onUpdateRequests, onOpenSharePortal }: RequestsManagerProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [newRequest, setNewRequest] = useState<Partial<ScheduleRequest>>({
     type: 'Vacaciones',
@@ -29,13 +30,13 @@ export default function RequestsManager({ config, onUpdateRequests }: RequestsMa
   const handleSaveRequest = () => {
     if (!newRequest.employeeId || !newRequest.startDate || !newRequest.endDate) return;
 
+    let updatedRequests: ScheduleRequest[];
     if (editingId) {
-      const updatedRequests = config.requests.map(r => 
+      updatedRequests = config.requests.map(r => 
         r.id === editingId 
           ? { ...r, ...newRequest as ScheduleRequest, id: editingId } 
           : r
       );
-      onUpdateRequests(updatedRequests);
       setEditingId(null);
     } else {
       const request: ScheduleRequest = {
@@ -44,11 +45,22 @@ export default function RequestsManager({ config, onUpdateRequests }: RequestsMa
         type: newRequest.type as RequestType,
         startDate: newRequest.startDate,
         endDate: newRequest.endDate,
+        reason: newRequest.reason,
+        status: 'approved'
       };
-      onUpdateRequests([...(config.requests || []), request]);
+      updatedRequests = [...(config.requests || []), request];
     }
 
-    setNewRequest({ ...newRequest, startDate: '', endDate: '', employeeId: '' });
+    onUpdateRequests(updatedRequests);
+    
+    // Sync with backend API
+    fetch('/api/requests', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updatedRequests)
+    }).catch(() => {});
+
+    setNewRequest({ ...newRequest, startDate: '', endDate: '', employeeId: '', reason: '' });
   };
 
   const startEdit = (req: ScheduleRequest) => {
@@ -56,33 +68,47 @@ export default function RequestsManager({ config, onUpdateRequests }: RequestsMa
       employeeId: req.employeeId,
       type: req.type,
       startDate: req.startDate,
-      endDate: req.endDate
+      endDate: req.endDate,
+      reason: req.reason
     });
     setEditingId(req.id);
-    
-    // Scroll to form
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const cancelEdit = () => {
     setEditingId(null);
-    setNewRequest({ ...newRequest, startDate: '', endDate: '', employeeId: '' });
+    setNewRequest({ ...newRequest, startDate: '', endDate: '', employeeId: '', reason: '' });
   };
 
   const removeRequest = (id: string) => {
-    onUpdateRequests(config.requests.filter(r => r.id !== id));
+    const updated = config.requests.filter(r => r.id !== id);
+    onUpdateRequests(updated);
+    fetch(`/api/requests/${id}`, { method: 'DELETE' }).catch(() => {});
   };
 
   return (
     <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm">
-      <div className="flex items-center space-x-3 mb-6">
-        <div className="p-2 bg-orange-100 rounded-xl text-orange-600">
-          <SuitcaseIcon />
+      <div className="flex flex-wrap items-center justify-between gap-4 mb-6 pb-4 border-b border-gray-100">
+        <div className="flex items-center space-x-3">
+          <div className="p-2 bg-orange-100 rounded-xl text-orange-600">
+            <SuitcaseIcon />
+          </div>
+          <div>
+            <h2 className="text-xl font-black text-gray-900 tracking-tight">Peticiones y Vacaciones</h2>
+            <p className="text-xs text-gray-400 font-medium italic">El sistema asignará automáticamente libres a quien esté de vacaciones.</p>
+          </div>
         </div>
-        <div>
-          <h2 className="text-xl font-black text-gray-900 tracking-tight">Peticiones y Vacaciones</h2>
-          <p className="text-xs text-gray-400 font-medium italic">El sistema asignará automáticamente libres a quien esté de vacaciones.</p>
-        </div>
+
+        {onOpenSharePortal && (
+          <button
+            type="button"
+            onClick={onOpenSharePortal}
+            className="flex items-center gap-2 bg-teal-50 hover:bg-teal-100 text-teal-800 border-2 border-teal-300 font-black text-xs px-4 py-2.5 rounded-xl shadow-xs transition"
+          >
+            <span>📲</span>
+            <span>Compartir Enlace con el Personal</span>
+          </button>
+        )}
       </div>
 
       {/* ADD REQUEST FORM */}
@@ -172,7 +198,8 @@ export default function RequestsManager({ config, onUpdateRequests }: RequestsMa
                 <div className="flex items-center space-x-2">
                   <div className="text-right mr-4">
                     <div className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Periodo</div>
-                    <div className="text-xs font-bold text-gray-700">{req.startDate} alc{req.endDate}</div>
+                    <div className="text-xs font-bold text-gray-700">{req.startDate} al {req.endDate}</div>
+                    {req.reason && <div className="text-[10px] text-gray-400 italic max-w-[180px] truncate">{req.reason}</div>}
                   </div>
                   <div className="flex items-center space-x-1">
                     <button 

@@ -11,7 +11,7 @@ import { generateWeeklySchedule, getDateForDay, getPostNightSequenceDays } from 
 import { jsPDF } from 'jspdf';
 import 'jspdf-autotable';
 import { RefreshIcon, SuitcaseIcon, EditIcon } from './components/Icons';
-import { ChevronLeft, ChevronRight, Settings, Download, MoreHorizontal, User, RotateCcw, CheckCircle2, AlertCircle, Moon } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Settings, Download, MoreHorizontal, User, RotateCcw, CheckCircle2, AlertCircle, Moon, Smartphone, Share2 } from 'lucide-react';
 import { Button } from './components/ui/button';
 import { Card } from './components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './components/ui/table';
@@ -19,6 +19,8 @@ import { Dialog, DialogTrigger } from './components/ui/dialog';
 import SetupForm from './components/SetupForm';
 import RequestsManager from './components/RequestsManager';
 import ConfigDialog from './components/ConfigDialog';
+import EmployeePortal from './components/EmployeePortal';
+import SharePortalDialog from './components/SharePortalDialog';
 
 // Extend jsPDF for autotable
 declare module 'jspdf' {
@@ -48,6 +50,16 @@ export default function App() {
   const [showRequests, setShowRequests] = useState(false);
   const [showSetup, setShowSetup] = useState(false);
   const [isConfigOpen, setIsConfigOpen] = useState(false);
+  
+  // Portal de empleado público
+  const [isEmployeePortal, setIsEmployeePortal] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      return params.has('portal') || window.location.pathname.includes('/portal') || window.location.pathname.includes('/peticiones');
+    }
+    return false;
+  });
+  const [showSharePortalModal, setShowSharePortalModal] = useState(false);
   
   // Modal para edición manual de turno puntual
   const [editingCell, setEditingCell] = useState<{
@@ -120,6 +132,35 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('turnos_config', JSON.stringify(config));
   }, [config]);
+
+  // Sincronizar peticiones desde el backend (por ejemplo si un empleado envía desde su móvil)
+  useEffect(() => {
+    const fetchRequests = () => {
+      fetch('/api/requests')
+        .then(res => res.ok ? res.json() : null)
+        .then(serverRequests => {
+          if (Array.isArray(serverRequests) && serverRequests.length > 0) {
+            setConfig(prev => {
+              const existingIds = new Set((prev.requests || []).map(r => r.id));
+              const toAdd = serverRequests.filter(sr => !existingIds.has(sr.id));
+              if (toAdd.length > 0) {
+                return {
+                  ...prev,
+                  requests: [...(prev.requests || []), ...toAdd]
+                };
+              }
+              return prev;
+            });
+          }
+        })
+        .catch(() => {});
+    };
+
+    fetchRequests();
+    // Comprobar peticiones nuevas cada 30 segundos
+    const interval = setInterval(fetchRequests, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   const startOfWeek = useMemo(() => getStartOfWeek(currentDate), [currentDate]);
   const weekNumber = useMemo(() => getWeekNumber(startOfWeek), [startOfWeek]);
@@ -213,6 +254,27 @@ export default function App() {
     setCurrentDate(newDate);
   };
 
+  // VISTA DEDICADA DEL PORTAL DE EMPLEADO (MÓVIL O ENLACE DIRECTO)
+  if (isEmployeePortal) {
+    return (
+      <EmployeePortal
+        config={config}
+        onBackToAdmin={() => {
+          setIsEmployeePortal(false);
+          const url = new URL(window.location.href);
+          url.searchParams.delete('portal');
+          window.history.pushState({}, '', url.pathname);
+        }}
+        onRequestSubmitted={(newReq) => {
+          setConfig(prev => ({
+            ...prev,
+            requests: [...(prev.requests || []), newReq]
+          }));
+        }}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gray-50 text-slate-950 p-4 lg:p-10 font-sans selection:bg-zinc-900 selection:text-white">
       <header className="mb-10 flex flex-col md:flex-row md:items-end justify-between border-b border-zinc-200 pb-8 gap-6">
@@ -276,6 +338,16 @@ export default function App() {
           
           <div className="h-14 w-[1px] bg-zinc-200 mx-2 hidden md:block"></div>
 
+          <Button 
+            variant="outline" 
+            className="h-14 border-2 border-teal-600 bg-teal-50 text-teal-950 hover:bg-teal-100 uppercase font-mono text-[10px] font-black tracking-widest px-4 rounded-none flex items-center gap-2 transition shadow-xs"
+            onClick={() => setShowSharePortalModal(true)}
+            title="Compartir enlace para que el personal solicite sus vacaciones"
+          >
+            <Smartphone className="h-4 w-4 text-teal-700 shrink-0" />
+            <span>Enlace Personal</span>
+          </Button>
+
           <Button variant="ghost" className="h-14 border border-zinc-200 bg-white text-zinc-500 hover:text-zinc-900 hover:bg-zinc-50 uppercase font-mono text-[10px] tracking-widest px-6 rounded-none" onClick={() => setShowRequests(!showRequests)}>
             <RefreshIcon className="mr-2 h-3 w-3" /> Peticiones ({config.requests?.length || 0})
           </Button>
@@ -301,11 +373,19 @@ export default function App() {
         </div>
       </header>
 
+      {/* MODAL PARA COMPARTIR ENLACE DE PETICIONES */}
+      <SharePortalDialog
+        isOpen={showSharePortalModal}
+        onClose={() => setShowSharePortalModal(false)}
+        onOpenPreview={() => setIsEmployeePortal(true)}
+      />
+
       {showRequests && (
         <div className="mb-10 border border-blue-100 p-6 bg-white shadow-lg shadow-blue-900/5 animate-in fade-in zoom-in duration-300">
            <RequestsManager 
               config={config} 
-              onUpdateRequests={(reqs) => setConfig({ ...config, requests: reqs })} 
+              onUpdateRequests={(reqs) => setConfig({ ...config, requests: reqs })}
+              onOpenSharePortal={() => setShowSharePortalModal(true)}
             />
         </div>
       )}
