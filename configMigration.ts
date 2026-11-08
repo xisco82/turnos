@@ -119,6 +119,7 @@ export const normalizeConfig = (raw: any): AppConfig => {
   rules.postNight = { ...DEFAULT_RULES.postNight, ...(raw.rules?.postNight || {}) };
   rules.minRest = { ...DEFAULT_RULES.minRest, ...(raw.rules?.minRest || {}) };
   rules.autoSpecial = { ...DEFAULT_RULES.autoSpecial, ...(raw.rules?.autoSpecial || {}) };
+  rules.nightPlus = { ...DEFAULT_RULES.nightPlus, ...(raw.rules?.nightPlus || {}) };
 
   const roles = Array.isArray(raw.roles) && raw.roles.length ? raw.roles : DEFAULT_ROLES;
 

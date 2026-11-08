@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { normalizeConfig } from './configMigration';
 import { DEFAULT_CONFIG, displayShift, shiftLegend } from './constants';
-import { getPublicWeekSchedule, mondayOfISO } from './scheduleService';
+import { getNightPlusForWeek, getPublicWeekSchedule, mondayOfISO } from './scheduleService';
 import { AppConfig, ScheduleRequest } from './types';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -77,9 +77,11 @@ app.get('/api/public/schedule', (req, res) => {
     const week = mondayOfISO(String(req.query.week || new Date().toISOString().slice(0, 10)));
     const cfg = configWithRequests();
     const data = getPublicWeekSchedule(cfg, week);
+    const np = cfg.rules.nightPlus.enabled ? getNightPlusForWeek(cfg, week) : null;
     res.json({
       weekStart: data.weekStart,
       legend: shiftLegend(cfg),
+      nightPlus: np && { label: np.label, threshold: np.threshold, rows: np.rows.map(r => ({ employeeId: r.employeeId, hours: r.hours, plus: r.plus })) },
       rows: data.rows.map(r => ({
         employeeId: r.employeeId,
         employeeName: r.employeeName,

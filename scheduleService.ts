@@ -15,7 +15,7 @@
 //     una búsqueda local deja el mínimo de incumplimientos y se informa de cada uno.
 // ─────────────────────────────────────────────────────────────────────────────
 import {
-  AppConfig, DayOfWeek, EmployeeConfig, RoleKind, ScheduleIssue, ScheduleRow,
+  AppConfig, DayOfWeek, EmployeeConfig, NightPlusResult, RoleKind, ScheduleIssue, ScheduleRow,
   Shift, WeekResult,
 } from './types';
 import { ABSENCE_SHIFTS, DAYS_OF_WEEK, EffectiveRules, effectiveRules, morningTeam, toISODate } from './constants';
@@ -823,4 +823,74 @@ export function getPublicWeekSchedule(config: AppConfig, weekStart: string) {
     weekStart: res.weekStart,
     rows: res.rows.map(r => ({ employeeId: r.employeeId, employeeName: r.employeeName, shifts: r.shifts })),
   };
+}
+
+// ───────────────────────── plus de nocturnidad ─────────────────────────
+
+/** Horas de un turno que caen dentro de la franja nocturna (por defecto 22:00–06:00).
+ *  Ejemplo: T (16:00–00:00) = 2 h; N (00:00–08:00) = 6 h; M y 10-18 = 0 h. */
+export function nightHoursOfShift(shift: Shift, config: Pick<AppConfig, 'shifts' | 'rules'>): number {
+  const code = strToCode(shift);
+  if (!isWorkCode(code)) return 0;
+  let h: Hours | null;
+  if (code === C_CUSTOM) h = parseCustomHours(shift);
+  else {
+    const def = config.shifts[CODE_TO_STR[code] as 'M' | 'T' | 'N' | 'S'];
+    h = normalizeHours(hourOf(def.start), hourOf(def.end));
+  }
+  if (!h) return 0;
+  const np = config.rules.nightPlus;
+  const ws = hourOf(np.start);
+  let we = hourOf(np.end);
+  if (we <= ws) we += 24;
+  let total = 0;
+  for (let k = -1; k <= 1; k++) {
+    total += Math.max(0, Math.min(h.e, we + 24 * k) - Math.max(h.s, ws + 24 * k));
+  }
+  return Math.round(total * 100) / 100;
+}
+
+const MONTHS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+
+/** Periodo de cálculo del plus para una semana: el mes del jueves de esa semana, o la propia semana. */
+export function nightPlusPeriodForWeek(config: AppConfig, weekStart: string) {
+  const monday = mondayOfISO(weekStart);
+  if (config.rules.nightPlus.period === 'week') {
+    return { from: monday, to: addDaysISO(monday, 6), label: 'esta semana' };
+  }
+  const thursday = parseISO(addDaysISO(monday, 3));
+  const y = thursday.getFullYear(), m = thursday.getMonth();
+  const from = toISODate(new Date(y, m, 1));
+  const to = toISODate(new Date(y, m + 1, 0));
+  return { from, to, label: `${MONTHS[m]} ${y}` };
+}
+
+/** Horas nocturnas y plus de cada empleado entre dos fechas (incluidas). */
+export function getNightPlus(config: AppConfig, from: string, to: string, label = ''): NightPlusResult {
+  const totals = new Map<string, { name: string; hours: number }>();
+  let w = mondayOfISO(from);
+  while (w <= to) {
+    const res = getWeekSchedule(config, w);
+    res.rows.forEach(r => {
+      const t = totals.get(r.employeeId) || { name: r.employeeName, hours: 0 };
+      r.shifts.forEach((s, d) => {
+        const date = addDaysISO(w, d);
+        if (date >= from && date <= to) t.hours += nightHoursOfShift(s.shift, config);
+      });
+      totals.set(r.employeeId, t);
+    });
+    w = addDaysISO(w, 7);
+  }
+  const threshold = config.rules.nightPlus.threshold;
+  return {
+    from, to, label, threshold,
+    rows: [...totals.entries()].map(([employeeId, t]) => ({
+      employeeId, employeeName: t.name, hours: Math.round(t.hours * 100) / 100, plus: t.hours >= threshold,
+    })),
+  };
+}
+
+export function getNightPlusForWeek(config: AppConfig, weekStart: string): NightPlusResult {
+  const p = nightPlusPeriodForWeek(config, weekStart);
+  return getNightPlus(config, p.from, p.to, p.label);
 }

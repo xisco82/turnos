@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { AppConfig, DayOfWeek, Shift } from './types';
 import { DAYS_OF_WEEK, DEFAULT_CONFIG, PDF_COLORS, displayShift, getMondayISO, morningTeam, shiftLegend, shiftStyle } from './constants';
 import { normalizeConfig, migrateOldOverrides } from './configMigration';
-import { addDaysISO, getWeekSchedule } from './scheduleService';
+import { addDaysISO, getNightPlusForWeek, getWeekSchedule, nightHoursOfShift } from './scheduleService';
 import { adminFetch, getStoredPin, setStoredPin } from './api';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -137,6 +137,9 @@ export default function App() {
   }, [auth]);
 
   const result = useMemo(() => getWeekSchedule(config, week), [config, week]);
+  const nightPlus = useMemo(() => (config.rules.nightPlus.enabled ? getNightPlusForWeek(config, week) : null), [config, week]);
+  const plusOf = (id: string) => nightPlus?.rows.find(r => r.employeeId === id);
+  const weekNightHours = (id: string) => result.rows.find(r => r.employeeId === id)?.shifts.reduce((a, s) => a + nightHoursOfShift(s.shift, config), 0) || 0;
   const scheduleData = result.rows;
   const weekOverrides = config.overridesByWeek[week] || {};
   const hasOverrides = Object.keys(weekOverrides).length > 0;
@@ -172,14 +175,17 @@ export default function App() {
     doc.text(shiftLegend(config).map(l => `${l.code} ${l.label}`).join('   '), 14, 25);
     autoTable(doc, {
       startY: 30,
-      head: [['Empleado', ...DAYS_OF_WEEK.map((d, i) => `${d} ${addDaysISO(week, i).slice(8)}`)]],
-      body: scheduleData.map(r => [r.employeeName, ...r.shifts.map(s => displayShift(s.shift, config))]),
+      head: [['Empleado', ...DAYS_OF_WEEK.map((d, i) => `${d} ${addDaysISO(week, i).slice(8)}`), ...(nightPlus ? [`Nocturnidad ${nightPlus.label}`] : [])]],
+      body: scheduleData.map(r => {
+        const p = plusOf(r.employeeId);
+        return [r.employeeName, ...r.shifts.map(s => displayShift(s.shift, config)), ...(nightPlus ? [`${p?.hours ?? 0} h · ${p?.plus ? 'SÍ' : 'NO'}`] : [])];
+      }),
       theme: 'grid',
       headStyles: { fillColor: [31, 41, 55] },
       bodyStyles: { halign: 'center', fontStyle: 'bold' },
       columnStyles: { 0: { halign: 'left' } },
       didParseCell: (data: any) => {
-        if (data.section !== 'body' || data.column.index === 0) return;
+        if (data.section !== 'body' || data.column.index === 0 || data.column.index > 7) return;
         const raw = scheduleData[data.row.index]?.shifts[data.column.index - 1]?.shift;
         const color = PDF_COLORS[raw] || [204, 251, 241];
         data.cell.styles.fillColor = color;
@@ -385,6 +391,12 @@ export default function App() {
                   <div className="mt-1 text-2xl font-black text-zinc-950">{addDaysISO(week, i).slice(8)}</div>
                 </TableHead>
               ))}
+              {nightPlus && (
+                <TableHead className="text-center py-3 px-2 min-w-[130px] bg-indigo-50">
+                  <div className="text-xs font-black uppercase text-indigo-950">Nocturnidad</div>
+                  <div className="text-[11px] font-bold text-indigo-800 normal-case">{nightPlus.label} · plus desde {nightPlus.threshold} h</div>
+                </TableHead>
+              )}
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -408,6 +420,19 @@ export default function App() {
                     </TableCell>
                   );
                 })}
+                {nightPlus && (() => {
+                  const p = plusOf(row.employeeId);
+                  const hours = p?.hours ?? 0;
+                  return (
+                    <TableCell className="text-center bg-indigo-50/50 px-2" title={`${hours} h nocturnas (${config.rules.nightPlus.start}–${config.rules.nightPlus.end}) en ${nightPlus.label}`}>
+                      <div className="text-2xl font-black text-zinc-950 leading-none">{hours} h</div>
+                      <div className="text-[11px] text-zinc-500 font-bold mt-1">esta semana {weekNightHours(row.employeeId)} h</div>
+                      <span className={`inline-block mt-1.5 px-2.5 py-0.5 rounded-full text-xs font-black ${p?.plus ? 'bg-indigo-700 text-white' : 'bg-zinc-200 text-zinc-600'}`}>
+                        {p?.plus ? 'Sí tiene plus' : `No (faltan ${Math.max(0, Math.round((nightPlus.threshold - hours) * 100) / 100)} h)`}
+                      </span>
+                    </TableCell>
+                  );
+                })()}
               </TableRow>
             ))}
           </TableBody>

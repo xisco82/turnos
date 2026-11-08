@@ -81,6 +81,7 @@ export const DEFAULT_RULES: RulesConfig = {
   fairRotation: true,
   absencesCountAsOff: true,
   autoSpecial: { enabled: true, threshold: 4, count: 1 },
+  nightPlus: { enabled: true, start: '22:00', end: '06:00', threshold: 26, period: 'month' },
 };
 
 export const defaultPersonalRules = (): PersonalRules => ({

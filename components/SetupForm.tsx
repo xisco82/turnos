@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { AppConfig, DayOfWeek, EmployeeConfig, PersonalRules, RoleKind, Shift, Tri, WorkShift } from '../types';
 import { DAYS_OF_WEEK, countPersonalRules, defaultPersonalRules, effectiveRules, newEmployee } from '../constants';
 import { normalizeConfig } from '../configMigration';
-import { mondayOfISO } from '../scheduleService';
+import { mondayOfISO, nightHoursOfShift } from '../scheduleService';
 import { ChevronDown, ChevronUp, Plus, Trash2, ArrowUp, ArrowDown } from 'lucide-react';
 
 interface SetupFormProps {
@@ -347,6 +347,29 @@ export default function SetupForm({ onSave, initialConfig }: SetupFormProps) {
           <div className="flex flex-wrap items-center gap-2 ml-[52px] text-sm">
             Cuando haya <NumberInput value={r.autoSpecial.threshold} min={1} max={20} onChange={v => setRules({ autoSpecial: { ...r.autoSpecial, threshold: v } })} /> o más de mañana,
             <NumberInput value={r.autoSpecial.count} min={1} max={10} onChange={v => setRules({ autoSpecial: { ...r.autoSpecial, count: v } })} /> pasa(n) al especial.
+          </div>
+        )}
+      </Section>
+
+      <Section title="Plus de nocturnidad">
+        <Toggle on={r.nightPlus.enabled} onChange={v => setRules({ nightPlus: { ...r.nightPlus, enabled: v } })}
+          label={`Plus con ${r.nightPlus.threshold} h o más de noche ${r.nightPlus.period === 'month' ? 'al mes' : 'a la semana'}`}
+          hint={`Cuenta las horas trabajadas entre las ${r.nightPlus.start} y las ${r.nightPlus.end}. Con los horarios actuales: ${config.shifts.T.label.toLowerCase()} = ${nightHoursOfShift('T', config)} h, ${config.shifts.N.label.toLowerCase()} = ${nightHoursOfShift('N', config)} h, ${config.shifts.M.label.toLowerCase()} = ${nightHoursOfShift('M', config)} h.`} />
+        {r.nightPlus.enabled && (
+          <div className="ml-[52px] space-y-2 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              Franja nocturna de
+              <input type="time" value={r.nightPlus.start} onChange={e => setRules({ nightPlus: { ...r.nightPlus, start: e.target.value } })} className="px-2 py-1 border border-zinc-300 rounded-md font-bold" />
+              a
+              <input type="time" value={r.nightPlus.end} onChange={e => setRules({ nightPlus: { ...r.nightPlus, end: e.target.value } })} className="px-2 py-1 border border-zinc-300 rounded-md font-bold" />
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              Plus desde <NumberInput value={r.nightPlus.threshold} min={1} max={300} onChange={v => setRules({ nightPlus: { ...r.nightPlus, threshold: v } })} /> horas
+              <select value={r.nightPlus.period} onChange={e => setRules({ nightPlus: { ...r.nightPlus, period: e.target.value as 'month' | 'week' } })} className="px-2 py-1 border border-zinc-300 rounded-md font-bold bg-white">
+                <option value="month">al mes</option>
+                <option value="week">a la semana</option>
+              </select>
+            </div>
           </div>
         )}
       </Section>

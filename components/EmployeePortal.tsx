@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { AppConfig, ScheduleRequest, RequestType, DayOfWeek } from '../types';
 import { Calendar, Send, CheckCircle2, User, ArrowLeft, MessageSquare, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react';
 import { DAYS_OF_WEEK, displayShift, getMondayISO, shiftLegend, shiftStyle } from '../constants';
-import { addDaysISO, getPublicWeekSchedule } from '../scheduleService';
+import { addDaysISO, getNightPlusForWeek, getPublicWeekSchedule } from '../scheduleService';
 
 interface EmployeePortalProps {
   config: AppConfig;
@@ -24,6 +24,7 @@ export default function EmployeePortal({ config, onBackToAdmin, onRequestSubmitt
   const [rows, setRows] = useState<PublicRow[]>([]);
   const [legend, setLegend] = useState(shiftLegend(config));
   const [loading, setLoading] = useState(false);
+  const [nightPlus, setNightPlus] = useState<{ label: string; threshold: number; rows: { employeeId: string; hours: number; plus: boolean }[] } | null>(null);
 
   // formulario
   const [requestType, setRequestType] = useState<RequestType>('Vacaciones');
@@ -54,8 +55,12 @@ export default function EmployeePortal({ config, onBackToAdmin, onRequestSubmitt
     };
     fetch(`/api/public/schedule?week=${week}`)
       .then(r => (r.ok ? r.json() : Promise.reject()))
-      .then(d => { if (!cancelled) { setRows(d.rows); if (d.legend) setLegend(d.legend); } })
-      .catch(() => { if (!cancelled) setRows(local()); })
+      .then(d => { if (!cancelled) { setRows(d.rows); if (d.legend) setLegend(d.legend); setNightPlus(d.nightPlus || null); } })
+      .catch(() => {
+        if (cancelled) return;
+        setRows(local());
+        setNightPlus(config.rules.nightPlus.enabled ? getNightPlusForWeek(config, week) : null);
+      })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [week, config]);
@@ -149,6 +154,21 @@ export default function EmployeePortal({ config, onBackToAdmin, onRequestSubmitt
                 ))}
               </div>
             )}
+            {myRow && nightPlus && (() => {
+              const p = nightPlus.rows.find(r => r.employeeId === selectedId);
+              if (!p) return null;
+              return (
+                <div className={`mb-5 rounded-xl p-3 flex items-center justify-between gap-3 ${p.plus ? 'bg-indigo-700 text-white' : 'bg-indigo-50 text-indigo-950 border border-indigo-100'}`}>
+                  <div>
+                    <div className="text-xs font-bold opacity-80">Horas nocturnas · {nightPlus.label}</div>
+                    <div className="text-2xl font-black">{p.hours} h</div>
+                  </div>
+                  <div className="text-right text-sm font-black">
+                    {p.plus ? 'Tienes plus de nocturnidad' : `Sin plus (desde ${nightPlus.threshold} h)`}
+                  </div>
+                </div>
+              );
+            })()}
             {!selectedId && <p className="text-sm text-zinc-500 mb-4">Elige tu nombre arriba para ver tus turnos destacados.</p>}
 
             <div className={`overflow-x-auto ${loading ? 'opacity-50' : ''}`}>

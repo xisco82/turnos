@@ -115,6 +115,23 @@ export interface RulesConfig {
   absencesCountAsOff: boolean;
   /** Los días con «threshold» o más personas de mañana, «count» de ellas hacen el turno especial. */
   autoSpecial: { enabled: boolean; threshold: number; count: number };
+  /** Plus de nocturnidad: horas trabajadas dentro de la franja nocturna en el periodo. */
+  nightPlus: { enabled: boolean; start: string; end: string; threshold: number; period: 'month' | 'week' };
+}
+
+export interface NightPlusRow {
+  employeeId: string;
+  employeeName: string;
+  hours: number;
+  plus: boolean;
+}
+
+export interface NightPlusResult {
+  from: string;
+  to: string;
+  label: string;
+  threshold: number;
+  rows: NightPlusRow[];
 }
 
 export interface SecurityConfig {
