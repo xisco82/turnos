@@ -10,7 +10,6 @@ import { ChevronLeft, ChevronRight, Settings, RotateCcw, CheckCircle2, AlertTria
 import { Button } from './components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './components/ui/table';
 import { Dialog, DialogTrigger } from './components/ui/dialog';
-import RequestsManager from './components/RequestsManager';
 import ConfigDialog from './components/ConfigDialog';
 import EmployeePortal from './components/EmployeePortal';
 import SharePortalDialog from './components/SharePortalDialog';
@@ -52,10 +51,10 @@ export default function App() {
   const loadedRef = useRef(false);
 
   const [week, setWeek] = useState(getMondayISO());
-  const [showRequests, setShowRequests] = useState(false);
   const [isConfigOpen, setIsConfigOpen] = useState(false);
   const [showSharePortalModal, setShowSharePortalModal] = useState(false);
   const [showRoles, setShowRoles] = useState(true);
+  const [showNight, setShowNight] = useState(true);
   const [editingCell, setEditingCell] = useState<{ employeeId: string; employeeName: string; day: DayOfWeek; currentShift: Shift } | null>(null);
   const [customManualShift, setCustomManualShift] = useState('');
 
@@ -136,7 +135,8 @@ export default function App() {
   }, [auth]);
 
   const result = useMemo(() => getWeekSchedule(config, week), [config, week]);
-  const nightPlus = useMemo(() => (config.rules.nightPlus.enabled ? getNightPlusForWeek(config, week) : null), [config, week]);
+  const nightPlusData = useMemo(() => (config.rules.nightPlus.enabled ? getNightPlusForWeek(config, week) : null), [config, week]);
+  const nightPlus = showNight ? nightPlusData : null;
   const plusOf = (id: string) => nightPlus?.rows.find(r => r.employeeId === id);
   const weekNightHours = (id: string) => result.rows.find(r => r.employeeId === id)?.shifts.reduce((a, s) => a + nightHoursOfShift(s.shift, config), 0) || 0;
   const scheduleData = result.rows;
@@ -174,11 +174,8 @@ export default function App() {
     doc.text(shiftLegend(config).map(l => `${l.code} ${l.label}`).join('   '), 14, 25);
     autoTable(doc, {
       startY: 30,
-      head: [['Empleado', ...DAYS_OF_WEEK.map((d, i) => `${d} ${addDaysISO(week, i).slice(8)}`), ...(nightPlus ? [nightPlus.final ? `Plus noct. ${nightPlus.label}` : `Noct. acumulada ${nightPlus.label}`] : [])]],
-      body: scheduleData.map(r => {
-        const p = plusOf(r.employeeId);
-        return [r.employeeName, ...r.shifts.map(s => displayShift(s.shift, config)), ...(nightPlus ? [p ? (nightPlus.final ? `${p.hours} h · ${p.plus ? 'SÍ' : 'NO'}` : `${p.hours} h`) : 'No aplica'] : [])];
-      }),
+      head: [['Empleado', ...DAYS_OF_WEEK.map((d, i) => `${d} ${addDaysISO(week, i).slice(8)}`)]],
+      body: scheduleData.map(r => [r.employeeName, ...r.shifts.map(s => displayShift(s.shift, config))]),
       theme: 'grid',
       headStyles: { fillColor: [31, 41, 55] },
       bodyStyles: { halign: 'center', fontStyle: 'bold' },
@@ -275,9 +272,6 @@ export default function App() {
           <Button variant="outline" className="h-12 border-2 border-teal-600 bg-teal-50 text-teal-950 hover:bg-teal-100 text-xs font-black px-4 rounded-lg" onClick={() => setShowSharePortalModal(true)}>
             <Smartphone className="h-4 w-4 mr-2 text-teal-700" /> Enlace personal
           </Button>
-          <Button variant="outline" className="h-12 text-xs font-bold px-4 rounded-lg" onClick={() => setShowRequests(!showRequests)}>
-            Peticiones ({config.requests.length})
-          </Button>
           <Dialog open={isConfigOpen} onOpenChange={setIsConfigOpen}>
             <DialogTrigger asChild>
               <Button variant="outline" className="h-12 text-xs font-bold px-4 rounded-lg"><Settings className="mr-2 h-4 w-4" /> Ajustes</Button>
@@ -293,12 +287,6 @@ export default function App() {
 
       <SharePortalDialog isOpen={showSharePortalModal} onClose={() => setShowSharePortalModal(false)}
         onOpenPreview={() => { window.history.pushState({}, '', '?portal=empleado'); setIsEmployeePortal(true); }} />
-
-      {showRequests && (
-        <div className="mb-8">
-          <RequestsManager config={config} onUpdateRequests={reqs => setConfig(prev => ({ ...prev, requests: reqs }))} onOpenSharePortal={() => setShowSharePortalModal(true)} />
-        </div>
-      )}
 
       {/* ESTADO DE LAS NORMAS */}
       <section className={`mb-6 rounded-xl border-2 p-4 ${errors.length ? 'border-rose-300 bg-rose-50' : warnings.length ? 'border-amber-300 bg-amber-50' : 'border-emerald-300 bg-emerald-50'}`}>
@@ -373,9 +361,16 @@ export default function App() {
             </span>
           ))}
         </div>
-        <label className="flex items-center gap-2 text-xs font-bold text-zinc-600 cursor-pointer">
-          <input type="checkbox" checked={showRoles} onChange={e => setShowRoles(e.target.checked)} className="accent-zinc-900" /> Ver roles (solo tú)
-        </label>
+        <div className="flex items-center gap-4">
+          <label className="flex items-center gap-2 text-xs font-bold text-zinc-600 cursor-pointer">
+            <input type="checkbox" checked={showRoles} onChange={e => setShowRoles(e.target.checked)} className="accent-zinc-900" /> Ver roles (solo tú)
+          </label>
+          {config.rules.nightPlus.enabled && (
+            <label className="flex items-center gap-2 text-xs font-bold text-zinc-600 cursor-pointer">
+              <input type="checkbox" checked={showNight} onChange={e => setShowNight(e.target.checked)} className="accent-zinc-900" /> Ver plus de nocturnidad (solo tú)
+            </label>
+          )}
+        </div>
       </div>
 
       {/* CUADRANTE */}
