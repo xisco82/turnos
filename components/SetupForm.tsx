@@ -1,628 +1,428 @@
 import React, { useState } from 'react';
-import { AppConfig, DayOfWeek } from '../types';
-import { PlusIcon, UserIcon, TrashIcon } from './Icons';
-import { DAYS_OF_WEEK, DEFAULT_CONFIG } from '../constants';
-import { getPostNightSequenceDays } from '../scheduleService';
+import { AppConfig, DayOfWeek, EmployeeConfig, RoleKind, Shift, WorkShift } from '../types';
+import { DAYS_OF_WEEK, newEmployee } from '../constants';
+import { normalizeConfig } from '../configMigration';
+import { mondayOfISO } from '../scheduleService';
+import { ChevronDown, ChevronUp, Plus, Trash2, ArrowUp, ArrowDown } from 'lucide-react';
 
 interface SetupFormProps {
   onSave: (config: AppConfig) => void;
-  initialConfig?: AppConfig;
+  initialConfig: AppConfig;
 }
 
+type Tab = 'equipo' | 'normas' | 'cobertura' | 'horarios' | 'roles' | 'seguridad';
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'equipo', label: 'Equipo' },
+  { id: 'normas', label: 'Normas' },
+  { id: 'cobertura', label: 'Personal por día' },
+  { id: 'horarios', label: 'Horarios' },
+  { id: 'roles', label: 'Roles' },
+  { id: 'seguridad', label: 'Seguridad' },
+];
+
+// ─────────────── piezas pequeñas ───────────────
+
+const Toggle = ({ on, onChange, label, hint }: { on: boolean; onChange: (v: boolean) => void; label: string; hint?: string }) => (
+  <label className="flex items-start gap-3 py-2 cursor-pointer select-none">
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      onClick={() => onChange(!on)}
+      className={`mt-0.5 relative shrink-0 w-10 h-6 rounded-full transition-colors focus-visible:ring-2 focus-visible:ring-zinc-900 ${on ? 'bg-emerald-600' : 'bg-zinc-300'}`}
+    >
+      <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${on ? 'translate-x-4' : ''}`} />
+    </button>
+    <span>
+      <span className="block text-sm font-bold text-zinc-900">{label}</span>
+      {hint && <span className="block text-xs text-zinc-500 leading-snug mt-0.5">{hint}</span>}
+    </span>
+  </label>
+);
+
+const NumberInput = ({ value, onChange, min = 0, max = 99, className = '' }: { value: number; onChange: (v: number) => void; min?: number; max?: number; className?: string }) => (
+  <input
+    type="number"
+    min={min}
+    max={max}
+    value={value}
+    onChange={e => onChange(Math.max(min, Math.min(max, Number(e.target.value) || 0)))}
+    className={`w-14 px-1.5 py-1 border border-zinc-300 rounded-md text-center text-sm font-bold focus:outline-none focus:ring-2 focus:ring-zinc-900 ${className}`}
+  />
+);
+
+const Section = ({ title, children, hint }: { title: string; hint?: string; children: React.ReactNode }) => (
+  <section className="bg-white border border-zinc-200 rounded-xl p-4 space-y-1">
+    <h3 className="text-base font-black text-zinc-900">{title}</h3>
+    {hint && <p className="text-xs text-zinc-500 pb-1">{hint}</p>}
+    {children}
+  </section>
+);
+
+const ruleTag = (n: string) => <span className="inline-block mr-1.5 px-1.5 py-0.5 rounded bg-zinc-900 text-white text-[10px] font-black align-middle">{n}</span>;
+
+// ─────────────── formulario ───────────────
+
 export default function SetupForm({ onSave, initialConfig }: SetupFormProps) {
-  const [config, setConfig] = useState<AppConfig>(() => {
-    if (initialConfig) {
-      const mergedFixedOff = {
-        jefe: [DayOfWeek.Friday, DayOfWeek.Saturday],
-        subjefe: [DayOfWeek.Sunday, DayOfWeek.Monday],
-        ...(DEFAULT_CONFIG.fixedOffDays || {}),
-        ...(initialConfig.fixedOffDays || {})
-      };
-      const mergedFixedShifts = {
-        ...(DEFAULT_CONFIG.fixedShifts || {}),
-        ...(initialConfig.fixedShifts || {})
-      };
-      return {
-        ...DEFAULT_CONFIG,
-        ...initialConfig,
-        recepcionistas: initialConfig.recepcionistas || DEFAULT_CONFIG.recepcionistas,
-        ayudantes: (initialConfig.ayudantes || DEFAULT_CONFIG.ayudantes).filter(name => name.trim().toUpperCase() !== 'LORENA'),
-        extraEmployees: initialConfig.extraEmployees || [],
-        fixedOffDays: mergedFixedOff,
-        fixedShifts: mergedFixedShifts,
-        postNightBehaviour: initialConfig.postNightBehaviour || DEFAULT_CONFIG.postNightBehaviour || 'Afternoon',
-        employeePostNightPreferences: initialConfig.employeePostNightPreferences || {},
-        requests: initialConfig.requests || []
-      };
-    }
-    return DEFAULT_CONFIG;
+  const [config, setConfig] = useState<AppConfig>(() => normalizeConfig(structuredClone(initialConfig)));
+  const [tab, setTab] = useState<Tab>('equipo');
+  const [openEmp, setOpenEmp] = useState<string | null>(null);
+
+  const set = (patch: Partial<AppConfig>) => setConfig(c => ({ ...c, ...patch }));
+  const setRules = (patch: Partial<AppConfig['rules']>) => setConfig(c => ({ ...c, rules: { ...c.rules, ...patch } }));
+  const updateEmp = (id: string, patch: Partial<EmployeeConfig>) =>
+    setConfig(c => ({ ...c, employees: c.employees.map(e => (e.id === id ? { ...e, ...patch } : e)) }));
+  const moveEmp = (id: string, dir: -1 | 1) => setConfig(c => {
+    const list = [...c.employees];
+    const i = list.findIndex(e => e.id === id);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= list.length) return c;
+    [list[i], list[j]] = [list[j], list[i]];
+    return { ...c, employees: list };
   });
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSave({ ...config, isConfigured: true });
+    onSave({ ...config, isConfigured: true, rotationStartDate: mondayOfISO(config.rotationStartDate) });
   };
 
-  const updateRecepcionista = (index: number, name: string) => {
-    const newRecs = [...config.recepcionistas];
-    newRecs[index] = name;
-    setConfig({ ...config, recepcionistas: newRecs });
-  };
+  const roleName = (id: string) => config.roles.find(r => r.id === id)?.name || 'Sin rol';
 
-  const updateAyudante = (index: number, name: string) => {
-    const newAyudantes = [...config.ayudantes];
-    newAyudantes[index] = name;
-    setConfig({ ...config, ayudantes: newAyudantes });
-  };
+  // ── EQUIPO ──
+  const renderEmployee = (emp: EmployeeConfig, index: number) => {
+    const open = openEmp === emp.id;
+    const flags = [
+      emp.permanentNight && 'Noche fija',
+      emp.nightRotation && 'Rota noches',
+      emp.weekendRotation && 'Rota fin de semana',
+      emp.fixedOffDays.length > 0 && `Libra ${emp.fixedOffDays.map(d => d.slice(0, 3)).join('-')}`,
+    ].filter(Boolean) as string[];
 
-  const setEmployeePostNight = (empId: string, pref: 'Afternoon' | 'Off') => {
-    setConfig({
-      ...config,
-      employeePostNightPreferences: {
-        ...(config.employeePostNightPreferences || {}),
-        [empId]: pref
-      }
-    });
-  };
-
-  const addExtraEmployee = () => {
-    setConfig({
-      ...config,
-      extraEmployees: [...config.extraEmployees, { id: `extra-${Date.now()}`, name: '', role: 'Extra' }]
-    });
-  };
-
-  const updateExtraEmployee = (id: string, field: 'name' | 'role', value: string) => {
-    setConfig({
-      ...config,
-      extraEmployees: config.extraEmployees.map(e => e.id === id ? { ...e, [field]: value } : e)
-    });
-  };
-
-  const removeExtraEmployee = (id: string) => {
-    setConfig({
-      ...config,
-      extraEmployees: config.extraEmployees.filter(e => e.id !== id)
-    });
-  };
-
-  const conserjeOffDays = config.fixedOffDays?.['conserje'] || [];
-  const postNightDays = getPostNightSequenceDays(conserjeOffDays);
-  const day1Name = postNightDays[0];
-  const day2Name = postNightDays[1];
-  const day3Name = postNightDays[2];
-
-  const afternoonDesc = day1Name && day2Name && day3Name
-    ? `${day1Name} entra de Tarde (16:00 - 00:00) y libra ${day2Name} y ${day3Name}.`
-    : 'Entra de Tarde tras el turno de noche y tiene 2 días libres consecutivos.';
-
-  const offDesc = day1Name && day2Name
-    ? `${day1Name} y ${day2Name} libres directos tras salir del turno de noche.`
-    : '2 días libres consecutivos directos tras salir del turno de noche.';
-
-  const toggleFixedOffDay = (empId: string, day: DayOfWeek) => {
-    const currentDays = config.fixedOffDays[empId] || [];
-    let newDays: DayOfWeek[];
-    
-    if (currentDays.includes(day)) {
-      newDays = currentDays.filter(d => d !== day);
-    } else {
-      if (currentDays.length >= 2) {
-        newDays = [currentDays[1], day];
-      } else {
-        newDays = [...currentDays, day];
-      }
-    }
-
-    // Sincronizar también con fixedShifts si tenía o no turno
-    const currentShifts = { ...(config.fixedShifts?.[empId] || {}) };
-    if (!currentDays.includes(day)) {
-      currentShifts[day] = 'L';
-    } else if (currentShifts[day] === 'L') {
-      delete currentShifts[day];
-    }
-
-    setConfig({
-      ...config,
-      fixedOffDays: {
-        ...config.fixedOffDays,
-        [empId]: newDays
-      },
-      fixedShifts: {
-        ...(config.fixedShifts || {}),
-        [empId]: currentShifts
-      }
-    });
-  };
-
-  const setEmployeeFixedShift = (empId: string, day: DayOfWeek, shift: string) => {
-    const currentEmpShifts = { ...(config.fixedShifts?.[empId] || {}) };
-    let updatedFixedOff = { ...(config.fixedOffDays || {}) };
-    const empOffDays = updatedFixedOff[empId] || [];
-
-    if (!shift) {
-      delete currentEmpShifts[day];
-    } else {
-      currentEmpShifts[day] = shift;
-      if (shift === 'L') {
-        if (!empOffDays.includes(day)) {
-          updatedFixedOff[empId] = empOffDays.length >= 2 ? [empOffDays[1], day] : [...empOffDays, day];
-        }
-      } else {
-        if (empOffDays.includes(day)) {
-          updatedFixedOff[empId] = empOffDays.filter(d => d !== day);
-        }
-      }
-    }
-
-    setConfig({
-      ...config,
-      fixedOffDays: updatedFixedOff,
-      fixedShifts: {
-        ...(config.fixedShifts || {}),
-        [empId]: currentEmpShifts
-      }
-    });
-  };
-
-  const clearEmployeeFixedShifts = (empId: string) => {
-    const nextFixedShifts = { ...(config.fixedShifts || {}) };
-    delete nextFixedShifts[empId];
-    setConfig({
-      ...config,
-      fixedShifts: nextFixedShifts
-    });
-  };
-
-  const renderFixedOffSelector = (id: string, label: string) => {
-    const selected = config.fixedOffDays[id] || [];
-    return (
-      <div className="mt-2.5">
-        <div className="flex items-center justify-between mb-1">
-          <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-tight">
-            Días Libres Fijos (L)
-          </label>
-          <span className="text-[9px] text-blue-600 font-bold">
-            {selected.length > 0 ? selected.map(d => d.substring(0, 3)).join(', ') : 'Ninguno fijo'}
-          </span>
-        </div>
-        <div className="flex flex-wrap gap-1">
-          {DAYS_OF_WEEK.map(day => {
-            const isSelected = selected.includes(day);
-            return (
-              <button
-                key={`${id}-${day}`}
-                type="button"
-                onClick={() => toggleFixedOffDay(id, day)}
-                className={`text-[10px] px-2 py-0.5 rounded-md border font-black transition-all cursor-pointer ${
-                  isSelected 
-                    ? 'bg-blue-600 border-blue-600 text-white shadow-xs' 
-                    : 'bg-white border-gray-200 text-gray-500 hover:border-blue-300'
-                }`}
-              >
-                {day.substring(0, 2)}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-    );
-  };
-
-  const renderFixedShiftsSelector = (id: string, label: string) => {
-    const empShifts = config.fixedShifts?.[id] || {};
-    const hasAny = Object.keys(empShifts).length > 0;
+    const toggleOff = (day: DayOfWeek) => {
+      const has = emp.fixedOffDays.includes(day);
+      updateEmp(emp.id, { fixedOffDays: has ? emp.fixedOffDays.filter(d => d !== day) : DAYS_OF_WEEK.filter(d => d === day || emp.fixedOffDays.includes(d)) });
+    };
+    const setFixedShift = (day: DayOfWeek, value: string) => {
+      const next = { ...emp.fixedShifts };
+      if (value) next[day] = value as Shift; else delete next[day];
+      updateEmp(emp.id, { fixedShifts: next });
+    };
 
     return (
-      <div className="mt-3 pt-2.5 border-t border-gray-200/70">
-        <div className="flex items-center justify-between mb-1.5">
-          <label className="block text-[10px] font-black uppercase text-zinc-700 tracking-tight flex items-center gap-1">
-            <span>⚡</span> Turnos Fijos en Días Concretos:
-          </label>
-          {hasAny && (
-            <button
-              type="button"
-              onClick={() => clearEmployeeFixedShifts(id)}
-              className="text-[9px] text-rose-600 hover:text-rose-800 font-bold transition cursor-pointer"
-              title="Restablecer turnos fijos a automático"
-            >
-              Borrar fijos
-            </button>
-          )}
+      <div key={emp.id} className={`border rounded-xl ${emp.active ? 'border-zinc-200 bg-white' : 'border-dashed border-zinc-300 bg-zinc-50 opacity-70'}`}>
+        <div className="flex items-center gap-2 p-3">
+          <div className="flex flex-col">
+            <button type="button" onClick={() => moveEmp(emp.id, -1)} disabled={index === 0} className="p-0.5 text-zinc-400 hover:text-zinc-900 disabled:opacity-20" aria-label="Subir"><ArrowUp className="w-3.5 h-3.5" /></button>
+            <button type="button" onClick={() => moveEmp(emp.id, 1)} disabled={index === config.employees.length - 1} className="p-0.5 text-zinc-400 hover:text-zinc-900 disabled:opacity-20" aria-label="Bajar"><ArrowDown className="w-3.5 h-3.5" /></button>
+          </div>
+          <input
+            value={emp.name}
+            onChange={e => updateEmp(emp.id, { name: e.target.value.toUpperCase() })}
+            placeholder="Nombre"
+            className="flex-1 min-w-0 px-3 py-2 border border-zinc-200 rounded-lg font-black text-zinc-900 focus:outline-none focus:ring-2 focus:ring-zinc-900"
+          />
+          <select
+            value={emp.roleId}
+            onChange={e => updateEmp(emp.id, { roleId: e.target.value })}
+            className="px-2 py-2 border border-zinc-200 rounded-lg text-sm font-bold bg-white max-w-[45%]"
+          >
+            {config.roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </select>
+          <button type="button" onClick={() => setOpenEmp(open ? null : emp.id)} className="p-2 rounded-lg hover:bg-zinc-100" aria-label={open ? 'Cerrar opciones' : 'Abrir opciones'}>
+            {open ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
+          </button>
         </div>
-        <p className="text-[10px] text-zinc-500 mb-2 leading-tight">
-          Asigna un turno específico (M, T, N, L) para un día concreto, o déjalo en Auto:
-        </p>
-
-        <div className="grid grid-cols-7 gap-1 bg-white/80 p-1.5 rounded-xl border border-gray-200">
-          {DAYS_OF_WEEK.map(day => {
-            const currentShift = empShifts[day] || '';
-            const dayShort = day.substring(0, 2).toUpperCase();
-
-            return (
-              <div key={`${id}-shift-${day}`} className="flex flex-col items-center">
-                <span className="text-[9px] font-black text-zinc-500 uppercase mb-1">
-                  {dayShort}
-                </span>
-                <select
-                  value={currentShift}
-                  onChange={(e) => setEmployeeFixedShift(id, day, e.target.value)}
-                  className={`w-full text-center text-[11px] font-black py-1 px-0.5 rounded-md border transition cursor-pointer ${
-                    currentShift === 'M'
-                      ? 'bg-amber-100 text-amber-950 border-amber-400 ring-1 ring-amber-300'
-                      : currentShift === 'T'
-                      ? 'bg-sky-100 text-sky-950 border-sky-400 ring-1 ring-sky-300'
-                      : currentShift === 'N'
-                      ? 'bg-indigo-700 text-white border-indigo-900'
-                      : currentShift === 'L'
-                      ? 'bg-zinc-200 text-zinc-800 border-zinc-400'
-                      : 'bg-white text-zinc-400 border-zinc-200 hover:border-zinc-400'
-                  }`}
-                  title={`${day}: ${currentShift ? `Turno fijo: ${currentShift}` : 'Automático'}`}
-                >
-                  <option value="">Auto</option>
-                  <option value="M">M</option>
-                  <option value="T">T</option>
-                  <option value="N">N</option>
-                  <option value="L">L</option>
-                </select>
+        {!open && flags.length > 0 && (
+          <div className="px-3 pb-3 -mt-1 flex flex-wrap gap-1">
+            {!emp.active && <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-zinc-300 text-zinc-700">Desactivado</span>}
+            {flags.map(f => <span key={f} className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-700">{f}</span>)}
+          </div>
+        )}
+        {open && (
+          <div className="border-t border-zinc-100 p-4 grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2">
+            <div>
+              <Toggle on={emp.active} onChange={v => updateEmp(emp.id, { active: v })} label="Entra en el cuadrante" hint="Desactívalo para quitarlo temporalmente sin borrarlo." />
+              <p className="text-xs font-black text-zinc-700 mt-3 mb-1">Turnos que puede hacer</p>
+              <div className="grid grid-cols-2 gap-x-3">
+                <Toggle on={emp.canMorning} onChange={v => updateEmp(emp.id, { canMorning: v })} label={config.shifts.M.label} />
+                <Toggle on={emp.canAfternoon} onChange={v => updateEmp(emp.id, { canAfternoon: v })} label={config.shifts.T.label} />
+                <Toggle on={emp.canNight} onChange={v => updateEmp(emp.id, { canNight: v, ...(v ? {} : { nightRotation: false, permanentNight: false }) })} label={config.shifts.N.label} />
+                <Toggle on={emp.canSpecial} onChange={v => updateEmp(emp.id, { canSpecial: v })} label={config.shifts.S.label} />
               </div>
-            );
-          })}
-        </div>
+              <p className="text-xs font-black text-zinc-700 mt-3 mb-1">Preferencia de turno</p>
+              <div className="flex gap-1">
+                {(['none', 'M', 'T'] as const).map(p => (
+                  <button key={p} type="button" onClick={() => updateEmp(emp.id, { preferredShift: p })}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${emp.preferredShift === p ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white border-zinc-200 text-zinc-700'}`}>
+                    {p === 'none' ? 'Sin preferencia' : config.shifts[p].label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <Toggle on={emp.permanentNight} onChange={v => updateEmp(emp.id, { permanentNight: v, ...(v ? { canNight: true, nightRotation: false, weekendRotation: false } : {}) })}
+                label="Trabaja siempre de noche" hint="Como el conserje de noche: todos sus días de trabajo son noche." />
+              <Toggle on={emp.nightRotation} onChange={v => updateEmp(emp.id, { nightRotation: v, ...(v ? { canNight: true, permanentNight: false } : {}) })}
+                label="Entra en la rotación de noches" hint="Cubre por turnos las noches que no cubre nadie fijo." />
+              <Toggle on={emp.weekendRotation} onChange={v => updateEmp(emp.id, { weekendRotation: v })}
+                label="Entra en la rotación de fin de semana libre" hint="Una semana de cada cierto tiempo librará sábado y domingo." />
+              <p className="text-xs font-black text-zinc-700 mt-3 mb-1">Al salir de noche</p>
+              <div className="grid grid-cols-3 gap-1">
+                {([['default', 'Norma general'], ['Afternoon', 'Tarde al día siguiente'], ['Off', '2 días libres']] as const).map(([v, l]) => (
+                  <button key={v} type="button" onClick={() => updateEmp(emp.id, { postNight: v })}
+                    className={`px-2 py-1.5 rounded-lg text-xs font-bold border leading-tight ${emp.postNight === v ? 'bg-indigo-700 text-white border-indigo-700' : 'bg-white border-zinc-200 text-zinc-700'}`}>
+                    {l}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="md:col-span-2 mt-2">
+              <p className="text-xs font-black text-zinc-700 mb-1">Días libres fijos</p>
+              <div className="flex flex-wrap gap-1">
+                {DAYS_OF_WEEK.map(day => (
+                  <button key={day} type="button" onClick={() => toggleOff(day)}
+                    className={`px-2.5 py-1.5 rounded-lg text-xs font-bold border ${emp.fixedOffDays.includes(day) ? 'bg-blue-600 text-white border-blue-600' : 'bg-white border-zinc-200 text-zinc-600'}`}>
+                    {day}
+                  </button>
+                ))}
+              </div>
+              <p className="text-xs font-black text-zinc-700 mt-3 mb-1">Turno fijo por día <span className="font-normal text-zinc-500">(Auto = lo decide el sistema)</span></p>
+              <div className="grid grid-cols-7 gap-1">
+                {DAYS_OF_WEEK.map(day => (
+                  <label key={day} className="flex flex-col items-center gap-0.5">
+                    <span className="text-[10px] font-bold text-zinc-500">{day.slice(0, 2)}</span>
+                    <select value={emp.fixedShifts[day] || ''} onChange={e => setFixedShift(day, e.target.value)}
+                      className="w-full text-xs font-bold py-1 border border-zinc-200 rounded-md bg-white text-center">
+                      <option value="">Auto</option>
+                      <option value="M">M</option>
+                      <option value="T">T</option>
+                      <option value="N">N</option>
+                      <option value="S">{config.shifts.S.start.slice(0, 2)}-{config.shifts.S.end.slice(0, 2)}</option>
+                      <option value="L">L</option>
+                    </select>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div className="md:col-span-2 flex justify-end pt-2">
+              <button type="button" onClick={() => { if (confirm(`¿Borrar a ${emp.name || 'este empleado'}?`)) set({ employees: config.employees.filter(e => e.id !== emp.id) }); }}
+                className="flex items-center gap-1.5 text-xs font-bold text-rose-700 hover:text-rose-900 px-3 py-1.5 rounded-lg hover:bg-rose-50">
+                <Trash2 className="w-4 h-4" /> Borrar empleado
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     );
   };
 
-  const renderPostNightSelector = (id: string, empName: string) => {
-    const effectivePref: 'Afternoon' | 'Off' = config.employeePostNightPreferences?.[id] || config.postNightBehaviour || 'Afternoon';
-    const isAfternoonActive = effectivePref === 'Afternoon';
+  const tabEquipo = (
+    <div className="space-y-3">
+      <p className="text-sm text-zinc-600">El orden de la lista es el orden del cuadrante y el orden en que empiezan las rotaciones. Abre cada persona para ver todas sus opciones.</p>
+      {config.employees.map(renderEmployee)}
+      <button type="button" onClick={() => { const e = newEmployee(); set({ employees: [...config.employees, e] }); setOpenEmp(e.id); }}
+        className="w-full flex items-center justify-center gap-2 py-3 border-2 border-dashed border-zinc-300 rounded-xl text-sm font-black text-zinc-600 hover:border-zinc-900 hover:text-zinc-900">
+        <Plus className="w-4 h-4" /> Añadir empleado
+      </button>
+    </div>
+  );
 
-    return (
-      <div className="mt-2.5 pt-2 border-t border-gray-200/70">
-        <div className="flex items-center justify-between gap-1 mb-1.5">
-          <span className="text-[10px] font-black uppercase tracking-tight text-zinc-700 flex items-center gap-1">
-            <span>🌙</span> Tras 2 Noches (N):
-          </span>
-          <button
-            type="button"
-            onClick={() => setEmployeePostNight(id, isAfternoonActive ? 'Off' : 'Afternoon')}
-            className={`text-[9px] font-black px-2 py-0.5 rounded uppercase tracking-wider transition-all cursor-pointer ${
-              isAfternoonActive
-                ? 'bg-sky-100 text-sky-900 border border-sky-300 hover:bg-sky-200'
-                : 'bg-indigo-100 text-indigo-950 border border-indigo-300 hover:bg-indigo-200'
-            }`}
-            title="Haz clic para activar o desactivar turno de tarde tras noche"
-          >
-            {isAfternoonActive ? '✓ Turno Tarde Activo' : '✓ 2 Libres Activo'}
-          </button>
-        </div>
+  // ── NORMAS ──
+  const r = config.rules;
+  const tabNormas = (
+    <div className="space-y-3">
+      <Section title="Jornada">
+        <Toggle on={r.weeklyDays.enabled} onChange={v => setRules({ weeklyDays: { ...r.weeklyDays, enabled: v } })}
+          label={`Trabajar ${r.weeklyDays.workDays} días y librar ${7 - r.weeklyDays.workDays}`} hint="Cada empleado trabaja exactamente estos días a la semana." />
+        {r.weeklyDays.enabled && (
+          <div className="flex items-center gap-2 ml-[52px] text-sm">
+            Días trabajados por semana: <NumberInput value={r.weeklyDays.workDays} min={1} max={7} onChange={v => setRules({ weeklyDays: { ...r.weeklyDays, workDays: v } })} />
+          </div>
+        )}
+        <Toggle on={r.consecutiveOffs} onChange={v => setRules({ consecutiveOffs: v })} label="Días libres seguidos" hint="Los días libres de la semana van juntos." />
+        <Toggle on={r.absencesCountAsOff} onChange={v => setRules({ absencesCountAsOff: v })} label="Vacaciones y bajas cuentan como días libres"
+          hint="Si está activo, quien tiene 2 días de vacaciones esa semana no libra además otros 2." />
+        <Toggle on={r.minRest.enabled} onChange={v => setRules({ minRest: { ...r.minRest, enabled: v } })} label={`Descanso mínimo de ${r.minRest.hours} h entre turnos`}
+          hint="Evita, por ejemplo, salir de tarde a medianoche y entrar de mañana al día siguiente." />
+        {r.minRest.enabled && (
+          <div className="flex items-center gap-2 ml-[52px] text-sm">Horas: <NumberInput value={r.minRest.hours} min={0} max={24} onChange={v => setRules({ minRest: { ...r.minRest, hours: v } })} /></div>
+        )}
+      </Section>
 
-        <div className="grid grid-cols-2 gap-1.5">
-          <button
-            type="button"
-            onClick={() => setEmployeePostNight(id, 'Afternoon')}
-            className={`py-1.5 px-2 rounded-lg text-[11px] font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-              isAfternoonActive
-                ? 'bg-sky-500 border-2 border-sky-600 text-white shadow-xs ring-2 ring-sky-200'
-                : 'bg-white border-2 border-zinc-200 text-zinc-600 hover:bg-zinc-50 hover:border-zinc-300'
-            }`}
-          >
-            <span className={`w-4 h-4 rounded flex items-center justify-center text-[10px] font-black ${
-              isAfternoonActive ? 'bg-white text-sky-800' : 'bg-sky-100 text-sky-900'
-            }`}>
-              T
-            </span>
-            <span>Turno Tarde</span>
-            {isAfternoonActive && <span className="font-black text-xs">✓</span>}
-          </button>
+      <Section title="Rotaciones">
+        <Toggle on={r.weekendRotation} onChange={v => setRules({ weekendRotation: v })} label="Fin de semana libre rotativo"
+          hint="Cada semana una persona distinta libra sábado y domingo. Nadie repite hasta que todos lo han tenido." />
+        <Toggle on={r.nightRotation.enabled} onChange={v => setRules({ nightRotation: { ...r.nightRotation, enabled: v } })} label="Noches rotativas"
+          hint="Las noches que no cubre el personal fijo de noche las hace cada semana una persona distinta de la rotación." />
+        {r.nightRotation.enabled && (
+          <div className="flex items-center gap-2 ml-[52px] text-sm">Noches seguidas por persona: <NumberInput value={r.nightRotation.nightsPerBlock} min={1} max={7} onChange={v => setRules({ nightRotation: { ...r.nightRotation, nightsPerBlock: v } })} /></div>
+        )}
+        <Toggle on={r.fairRotation} onChange={v => setRules({ fairRotation: v })} label="Repartir tardes y turnos especiales con justicia"
+          hint="Tiene en cuenta las semanas anteriores para que nadie acumule más tardes que el resto." />
+      </Section>
 
-          <button
-            type="button"
-            onClick={() => setEmployeePostNight(id, 'Off')}
-            className={`py-1.5 px-2 rounded-lg text-[11px] font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-              !isAfternoonActive
-                ? 'bg-indigo-700 border-2 border-indigo-800 text-white shadow-xs ring-2 ring-indigo-200'
-                : 'bg-white border-2 border-zinc-200 text-zinc-600 hover:bg-zinc-50 hover:border-zinc-300'
-            }`}
-          >
-            <span className={`w-4 h-4 rounded flex items-center justify-center text-[10px] font-black ${
-              !isAfternoonActive ? 'bg-white text-indigo-800' : 'bg-indigo-100 text-indigo-900'
-            }`}>
-              L
-            </span>
-            <span>2 Libres</span>
-            {!isAfternoonActive && <span className="font-black text-xs">✓</span>}
-          </button>
-        </div>
-        <p className="text-[9px] text-zinc-500 mt-1 italic leading-tight">
-          {isAfternoonActive
-            ? `${day1Name || 'Día 1'} entra de Tarde (16:00-00:00) y libra ${day2Name || 'Día 2'} y ${day3Name || 'Día 3'}.`
-            : `${day1Name || 'Día 1'} y ${day2Name || 'Día 2'} libres directos tras salir de noche.`}
-        </p>
+      <Section title="Salida de noche">
+        <Toggle on={r.postNight.enabled} onChange={v => setRules({ postNight: { ...r.postNight, enabled: v } })} label="Aplicar norma al salir de noche"
+          hint="Cada empleado puede tener su propia opción en Equipo; si no, se usa esta." />
+        {r.postNight.enabled && (
+          <div className="grid grid-cols-2 gap-2 ml-[52px]">
+            {([['Afternoon', 'Tarde al día siguiente'], ['Off', '2 días libres']] as const).map(([v, l]) => (
+              <button key={v} type="button" onClick={() => setRules({ postNight: { ...r.postNight, defaultBehaviour: v } })}
+                className={`px-3 py-2 rounded-lg text-sm font-bold border ${r.postNight.defaultBehaviour === v ? 'bg-indigo-700 text-white border-indigo-700' : 'bg-white border-zinc-200'}`}>{l}</button>
+            ))}
+          </div>
+        )}
+      </Section>
+
+      <Section title="Tardes">
+        <Toggle on={r.noTwoHelpersAfternoon} onChange={v => setRules({ noTwoHelpersAfternoon: v })} label="Nunca dos ayudantes juntos de tarde" />
+        <Toggle on={r.receptionistRequiredAfternoon} onChange={v => setRules({ receptionistRequiredAfternoon: v })} label="Siempre un recepcionista de tarde"
+          hint="Cuentan como recepcionista los roles marcados como «Recepción» en Roles." />
+      </Section>
+
+      <Section title="Inicio de las rotaciones" hint="Las rotaciones se calculan semana a semana desde este lunes. Cámbialo solo si quieres reiniciar el orden.">
+        <input type="date" value={config.rotationStartDate} onChange={e => set({ rotationStartDate: e.target.value })}
+          className="px-3 py-2 border border-zinc-300 rounded-lg text-sm font-bold" />
+      </Section>
+    </div>
+  );
+
+  // ── COBERTURA ──
+  const setCov = (day: DayOfWeek, path: string, value: number | boolean) => setConfig(c => {
+    const cov = structuredClone(c.coverage);
+    const [a, b] = path.split('.');
+    (cov[day] as any)[a] = b ? { ...(cov[day] as any)[a], [b]: value } : value;
+    return { ...c, coverage: cov };
+  });
+  const copyToAll = (from: DayOfWeek, days: DayOfWeek[]) => setConfig(c => {
+    const cov = structuredClone(c.coverage);
+    days.forEach(d => { cov[d] = structuredClone(c.coverage[from]); });
+    return { ...c, coverage: cov };
+  });
+  const tabCobertura = (
+    <div className="space-y-3">
+      <p className="text-sm text-zinc-600">Mínimo y máximo de personas en cada turno. Si sobra personal, el sistema lo coloca hasta el máximo; si falta, te avisa.</p>
+      <div className="overflow-x-auto bg-white border border-zinc-200 rounded-xl">
+        <table className="w-full text-sm">
+          <thead className="bg-zinc-50 text-zinc-700">
+            <tr>
+              <th className="text-left p-2 font-black">Día</th>
+              <th className="p-2 font-black">{config.shifts.M.label}<br /><span className="font-normal text-xs">mín / máx</span></th>
+              <th className="p-2 font-black">{config.shifts.T.label}<br /><span className="font-normal text-xs">mín / máx</span></th>
+              <th className="p-2 font-black">{config.shifts.N.label}</th>
+              <th className="p-2 font-black">{config.shifts.S.label} {config.shifts.S.start}-{config.shifts.S.end}<br /><span className="font-normal text-xs">activo · mín / máx</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            {DAYS_OF_WEEK.map(day => {
+              const c = config.coverage[day];
+              return (
+                <tr key={day} className="border-t border-zinc-100">
+                  <td className="p-2 font-bold whitespace-nowrap">{day}</td>
+                  <td className="p-2 text-center whitespace-nowrap"><NumberInput value={c.M.min} onChange={v => setCov(day, 'M.min', v)} /> <NumberInput value={c.M.max} onChange={v => setCov(day, 'M.max', v)} /></td>
+                  <td className="p-2 text-center whitespace-nowrap"><NumberInput value={c.T.min} onChange={v => setCov(day, 'T.min', v)} /> <NumberInput value={c.T.max} onChange={v => setCov(day, 'T.max', v)} /></td>
+                  <td className="p-2 text-center"><NumberInput value={c.N} onChange={v => setCov(day, 'N', v)} /></td>
+                  <td className="p-2 text-center whitespace-nowrap">
+                    <input type="checkbox" checked={c.S.enabled} onChange={e => setCov(day, 'S.enabled', e.target.checked)} className="w-4 h-4 mr-2 align-middle accent-fuchsia-600" aria-label={`Turno especial ${day}`} />
+                    <NumberInput value={c.S.min} onChange={v => setCov(day, 'S.min', v)} className={c.S.enabled ? '' : 'opacity-40'} /> <NumberInput value={c.S.max} onChange={v => setCov(day, 'S.max', v)} className={c.S.enabled ? '' : 'opacity-40'} />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
-    );
+      <div className="flex flex-wrap gap-2">
+        <button type="button" onClick={() => copyToAll(DayOfWeek.Monday, [DayOfWeek.Tuesday, DayOfWeek.Wednesday, DayOfWeek.Thursday])} className="px-3 py-2 text-xs font-bold border border-zinc-300 rounded-lg bg-white hover:bg-zinc-50">Copiar lunes a martes–jueves</button>
+        <button type="button" onClick={() => copyToAll(DayOfWeek.Friday, [DayOfWeek.Saturday, DayOfWeek.Sunday])} className="px-3 py-2 text-xs font-bold border border-zinc-300 rounded-lg bg-white hover:bg-zinc-50">Copiar viernes a sábado y domingo</button>
+        <button type="button" onClick={() => setConfig(c => { const cov = structuredClone(c.coverage); [DayOfWeek.Friday, DayOfWeek.Saturday, DayOfWeek.Sunday].forEach(d => { cov[d].S.enabled = !c.coverage[DayOfWeek.Friday].S.enabled; }); return { ...c, coverage: cov }; })}
+          className="px-3 py-2 text-xs font-bold border border-fuchsia-300 text-fuchsia-900 rounded-lg bg-fuchsia-50 hover:bg-fuchsia-100">
+          {config.coverage[DayOfWeek.Friday].S.enabled ? 'Quitar' : 'Poner'} turno especial viernes a domingo
+        </button>
+      </div>
+    </div>
+  );
+
+  // ── HORARIOS ──
+  const setShift = (code: WorkShift, field: 'label' | 'start' | 'end', value: string) =>
+    setConfig(c => ({ ...c, shifts: { ...c.shifts, [code]: { ...c.shifts[code], [field]: value } } }));
+  const tabHorarios = (
+    <div className="space-y-3">
+      <p className="text-sm text-zinc-600">Nombre y horario de cada turno. El turno especial aparece en el cuadrante con su horario (por ejemplo 10-18).</p>
+      {(['M', 'T', 'N', 'S'] as WorkShift[]).map(code => (
+        <div key={code} className="flex flex-wrap items-center gap-2 bg-white border border-zinc-200 rounded-xl p-3">
+          <span className="w-8 h-8 rounded-md bg-zinc-900 text-white font-black flex items-center justify-center">{code}</span>
+          <input value={config.shifts[code].label} onChange={e => setShift(code, 'label', e.target.value)} className="flex-1 min-w-[120px] px-3 py-2 border border-zinc-200 rounded-lg font-bold" />
+          <input type="time" value={config.shifts[code].start} onChange={e => setShift(code, 'start', e.target.value)} className="px-2 py-2 border border-zinc-200 rounded-lg font-bold" aria-label="Entrada" />
+          <span className="text-zinc-400">a</span>
+          <input type="time" value={config.shifts[code].end} onChange={e => setShift(code, 'end', e.target.value)} className="px-2 py-2 border border-zinc-200 rounded-lg font-bold" aria-label="Salida" />
+        </div>
+      ))}
+    </div>
+  );
+
+  // ── ROLES ──
+  const kindLabel: Record<RoleKind, string> = { recepcion: 'Recepción', ayudante: 'Ayudante', otro: 'Otro' };
+  const tabRoles = (
+    <div className="space-y-3">
+      <p className="text-sm text-zinc-600">Los roles solo los ve el administrador. El tipo decide cómo cuenta cada rol en las normas de la tarde.</p>
+      {config.roles.map(role => {
+        const used = config.employees.filter(e => e.roleId === role.id).length;
+        return (
+          <div key={role.id} className="flex flex-wrap items-center gap-2 bg-white border border-zinc-200 rounded-xl p-3">
+            <input value={role.name} onChange={e => set({ roles: config.roles.map(x => (x.id === role.id ? { ...x, name: e.target.value } : x)) })}
+              className="flex-1 min-w-[160px] px-3 py-2 border border-zinc-200 rounded-lg font-bold" />
+            <select value={role.kind} onChange={e => set({ roles: config.roles.map(x => (x.id === role.id ? { ...x, kind: e.target.value as RoleKind } : x)) })}
+              className="px-2 py-2 border border-zinc-200 rounded-lg text-sm font-bold bg-white">
+              {(Object.keys(kindLabel) as RoleKind[]).map(k => <option key={k} value={k}>{kindLabel[k]}</option>)}
+            </select>
+            <span className="text-xs text-zinc-500 w-24 text-right">{used} {used === 1 ? 'persona' : 'personas'}</span>
+            <button type="button" disabled={used > 0} title={used > 0 ? 'Cambia antes el rol de quien lo tiene' : 'Borrar rol'}
+              onClick={() => set({ roles: config.roles.filter(x => x.id !== role.id) })}
+              className="p-2 text-zinc-400 hover:text-rose-700 disabled:opacity-25" aria-label="Borrar rol"><Trash2 className="w-4 h-4" /></button>
+          </div>
+        );
+      })}
+      <button type="button" onClick={() => set({ roles: [...config.roles, { id: `role-${Date.now()}`, name: 'Nuevo rol', kind: 'otro' }] })}
+        className="w-full flex items-center justify-center gap-2 py-3 border-2 border-dashed border-zinc-300 rounded-xl text-sm font-black text-zinc-600 hover:border-zinc-900 hover:text-zinc-900">
+        <Plus className="w-4 h-4" /> Añadir rol
+      </button>
+    </div>
+  );
+
+  // ── SEGURIDAD ──
+  const tabSeguridad = (
+    <div className="space-y-3">
+      <Section title="PIN del administrador" hint="Lo pide al abrir el panel. Los empleados solo entran por su enlace y nunca ven roles ni ajustes. Déjalo vacío para quitar el bloqueo.">
+        <input type="text" inputMode="numeric" value={config.security.adminPin}
+          onChange={e => set({ security: { ...config.security, adminPin: e.target.value.trim() } })}
+          className="px-3 py-2 border border-zinc-300 rounded-lg text-lg font-black tracking-[0.3em] w-40" placeholder="Sin PIN" />
+        {!config.security.adminPin && <p className="text-xs font-bold text-amber-700 pt-1">Sin PIN, cualquiera que abra la dirección principal puede ver los roles.</p>}
+      </Section>
+      <Section title="Nombre del responsable" hint="Aparece en los avisos que envían los empleados.">
+        <input value={config.managerName} onChange={e => set({ managerName: e.target.value })} className="px-3 py-2 border border-zinc-300 rounded-lg font-bold" />
+      </Section>
+    </div>
+  );
+
+  const content: Record<Tab, React.ReactNode> = {
+    equipo: tabEquipo, normas: tabNormas, cobertura: tabCobertura, horarios: tabHorarios, roles: tabRoles, seguridad: tabSeguridad,
   };
 
   return (
-    <div className="max-w-4xl mx-auto bg-white p-8 rounded-3xl shadow-xl border border-gray-100">
-      <div className="text-center mb-10">
-        <h1 className="text-4xl font-black text-gray-900 mb-2 tracking-tight">Configuración del Equipo</h1>
-        <p className="text-gray-500 font-medium italic">Asigna nombres y define si alguien tiene días libres fijos específicos.</p>
-      </div>
-
-      <form onSubmit={handleSubmit} className="space-y-10">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
-          <div className="space-y-6">
-            <h3 className="text-xs font-black text-gray-400 uppercase tracking-[0.2em] border-b border-gray-100 pb-2">Empleados</h3>
-            
-            <div className="bg-gray-50 p-4 rounded-2xl border border-gray-200/80 space-y-2">
-              <label className="block text-sm font-black text-gray-800 uppercase tracking-tight">Jefe de Recepción</label>
-              <input 
-                type="text" 
-                value={config.jefe}
-                onChange={(e) => setConfig({ ...config, jefe: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition font-medium bg-white"
-                placeholder="Nombre del Jefe"
-                required
-              />
-              {renderFixedOffSelector('jefe', 'Jefe')}
-              {renderFixedShiftsSelector('jefe', 'Jefe')}
-            </div>
-
-            <div className="bg-gray-50 p-4 rounded-2xl border border-gray-200/80 space-y-2">
-              <label className="block text-sm font-black text-gray-800 uppercase tracking-tight">2º Jefe de Recepción</label>
-              <input 
-                type="text" 
-                value={config.subjefe}
-                onChange={(e) => setConfig({ ...config, subjefe: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition font-medium bg-white"
-                placeholder="Nombre del 2º Jefe"
-                required
-              />
-              {renderFixedOffSelector('subjefe', '2º Jefe')}
-              {renderFixedShiftsSelector('subjefe', '2º Jefe')}
-            </div>
-
-            {/* CONSERJE DE NOCHE Y COBERTURA DINÁMICA */}
-            <div className="bg-gradient-to-br from-amber-50/80 to-indigo-50/60 p-5 rounded-2xl border-2 border-amber-300 shadow-sm space-y-4">
-              <div className="flex items-center justify-between">
-                <label className="block text-sm font-black text-zinc-900 uppercase tracking-tight flex items-center gap-2">
-                  <span>🌙</span> Conserje de Noche & Cobertura Automática
-                </label>
-                <span className="text-[10px] font-black uppercase tracking-wider bg-amber-200/80 text-amber-900 px-2.5 py-0.5 rounded-full border border-amber-300">
-                  Detección Dinámica
-                </span>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-zinc-700 mb-1.5">Nombre del Conserje</label>
-                <input 
-                  type="text" 
-                  value={config.conserje}
-                  onChange={(e) => setConfig({ ...config, conserje: e.target.value })}
-                  className="w-full px-4 py-2 bg-white border border-zinc-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition font-medium"
-                  placeholder="Nombre del Conserje"
-                  required
-                />
-              </div>
-
-              {/* Selector de Días Libres del Conserje */}
-              <div className="pt-2 border-t border-amber-200/60">
-                <div className="flex items-center justify-between mb-2">
-                  <label className="block text-xs font-black uppercase tracking-tight text-zinc-800">
-                    Días libres del conserje de noche:
-                  </label>
-                  <span className="text-[11px] text-zinc-500 font-semibold">
-                    (Haz clic para marcar o desmarcar)
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-1.5">
-                  {DAYS_OF_WEEK.map(day => {
-                    const isSelected = conserjeOffDays.includes(day);
-                    return (
-                      <button
-                        key={`conserje-day-${day}`}
-                        type="button"
-                        onClick={() => toggleFixedOffDay('conserje', day)}
-                        className={`p-2 rounded-xl border-2 font-bold text-xs flex flex-col items-center justify-center transition-all cursor-pointer ${
-                          isSelected
-                            ? 'bg-amber-500 border-amber-600 text-white shadow-sm ring-2 ring-amber-200'
-                            : 'bg-white border-zinc-200 text-zinc-700 hover:border-amber-300 hover:bg-amber-50/50'
-                        }`}
-                      >
-                        <span className="text-sm">{isSelected ? '☑' : '☐'}</span>
-                        <span className="mt-0.5 text-[11px] uppercase tracking-tight">{day}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* DÍAS A CUBRIR = DÍAS LIBRES DEL CONSERJE (DETECCIÓN AUTOMÁTICA) */}
-              <div className="bg-white p-4 rounded-xl border-2 border-indigo-200 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div className="space-y-0.5">
-                  <div className="flex items-center gap-1.5">
-                    <span className="w-2.5 h-2.5 rounded-full bg-indigo-600 animate-pulse"></span>
-                    <span className="text-xs font-black uppercase text-indigo-950 tracking-wider">
-                      Días que necesitan cobertura:
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-zinc-500 font-medium">
-                    Regla principal: Días a cubrir = días libres seleccionados del conserje de noche.
-                  </p>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {conserjeOffDays.length > 0 ? (
-                    conserjeOffDays.map(day => (
-                      <span
-                        key={`badge-cobertura-${day}`}
-                        className="px-3 py-1 bg-indigo-700 text-white text-xs font-black rounded-lg shadow-xs flex items-center gap-1.5"
-                      >
-                        <span>🌙</span> {day}
-                      </span>
-                    ))
-                  ) : (
-                    <span className="text-xs italic text-amber-800 font-semibold px-2.5 py-1 bg-amber-50 rounded-lg border border-amber-200">
-                      Sin días libres (cubre toda la semana)
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* REGLA GENERAL TRAS TRABAJAR DE NOCHE */}
-            <div className="bg-indigo-50/80 p-5 rounded-2xl border-2 border-indigo-200">
-              <label className="block text-sm font-black text-indigo-950 uppercase tracking-tight mb-1">
-                🌙 Regla General al terminar turnos de noche
-              </label>
-              <p className="text-xs text-indigo-800 font-medium mb-4">
-                Comportamiento por defecto. Abajo en cada empleado puedes activar o desactivar individualmente el Turno de Tarde (T) o 2 Libres:
-              </p>
-              
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <button
-                  type="button"
-                  onClick={() => setConfig({ ...config, postNightBehaviour: 'Afternoon' })}
-                  className={`p-3 rounded-xl border-2 text-left transition-all ${
-                    config.postNightBehaviour === 'Afternoon'
-                      ? 'bg-white border-sky-500 shadow-md ring-2 ring-sky-300'
-                      : 'bg-white/70 border-zinc-200 text-zinc-600 hover:bg-white'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="w-7 h-7 rounded bg-sky-100 text-sky-900 font-black text-sm flex items-center justify-center">T</span>
-                    <span className="font-bold text-xs uppercase text-zinc-900">Turno de Tarde</span>
-                  </div>
-                  <p className="text-[11px] text-zinc-600 leading-snug">
-                    {afternoonDesc}
-                  </p>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setConfig({ ...config, postNightBehaviour: 'Off' })}
-                  className={`p-3 rounded-xl border-2 text-left transition-all ${
-                    config.postNightBehaviour === 'Off'
-                      ? 'bg-white border-indigo-600 shadow-md ring-2 ring-indigo-300'
-                      : 'bg-white/70 border-zinc-200 text-zinc-600 hover:bg-white'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="w-7 h-7 rounded bg-indigo-700 text-white font-black text-sm flex items-center justify-center">L</span>
-                    <span className="font-bold text-xs uppercase text-zinc-900">2 Libres Consecutivos</span>
-                  </div>
-                  <p className="text-[11px] text-zinc-600 leading-snug">
-                    {offDesc}
-                  </p>
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* STAFF */}
-          <div className="space-y-6">
-            <h3 className="text-xs font-black text-gray-400 uppercase tracking-[0.2em] border-b border-gray-100 pb-2">Empleados</h3>
-            
-            <div className="space-y-4">
-              <label className="block text-sm font-bold text-gray-700">Recepcionistas ({config.recepcionistas.length})</label>
-              {config.recepcionistas.map((name, i) => {
-                const recId = `rec-${i}`;
-                const specificPref = config.employeePostNightPreferences?.[recId];
-
-                return (
-                  <div key={`rec-container-${i}`} className="p-3 bg-gray-50 rounded-2xl border border-gray-100">
-                    <input 
-                      type="text" 
-                      value={name}
-                      onChange={(e) => updateRecepcionista(i, e.target.value)}
-                      className="w-full px-3 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none transition text-sm font-medium"
-                      placeholder={`Nombre Recepcionista ${i+1}`}
-                      required
-                    />
-                    {renderFixedOffSelector(recId, name)}
-                    {renderFixedShiftsSelector(recId, name)}
-                    {renderPostNightSelector(recId, name)}
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="space-y-4 pt-4 border-t border-gray-100">
-              <label className="block text-sm font-bold text-gray-700">Ayudantes ({config.ayudantes.length})</label>
-              {config.ayudantes.map((name, i) => (
-                <div key={`ayu-container-${i}`} className="p-3 bg-gray-50 rounded-2xl border border-gray-100">
-                  <input 
-                    type="text" 
-                    value={name}
-                    onChange={(e) => updateAyudante(i, e.target.value)}
-                    className="w-full px-3 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none transition text-sm font-medium"
-                    placeholder={`Nombre Ayudante ${i+1}`}
-                    required
-                  />
-                  {renderFixedOffSelector(`ayu-${i}`, name)}
-                  {renderFixedShiftsSelector(`ayu-${i}`, name)}
-                  {renderPostNightSelector(`ayu-${i}`, name)}
-                </div>
-              ))}
-            </div>
-
-            {/* EXTRA CATEGORIES */}
-            <div className="space-y-4 pt-4 border-t border-gray-100">
-              <div className="flex justify-between items-center">
-                <label className="block text-sm font-bold text-gray-700">Otras Categorías / Extras</label>
-                <button 
-                  type="button" 
-                  onClick={addExtraEmployee}
-                  className="text-[10px] font-black text-blue-600 hover:text-blue-800 transition"
-                >
-                  + AÑADIR
-                </button>
-              </div>
-              {config.extraEmployees.map((extra) => (
-                <div key={extra.id} className="p-3 bg-blue-50/30 rounded-2xl border border-blue-100 relative group">
-                  <button 
-                    type="button" 
-                    onClick={() => removeExtraEmployee(extra.id)}
-                    className="absolute -top-1 -right-1 bg-white p-1 rounded-full border border-gray-200 text-gray-400 hover:text-red-500 shadow-sm opacity-0 group-hover:opacity-100 transition"
-                  >
-                    <TrashIcon />
-                  </button>
-                  <div className="grid grid-cols-2 gap-2 mb-2">
-                    <input 
-                      type="text" 
-                      value={extra.role}
-                      onChange={(e) => updateExtraEmployee(extra.id, 'role', e.target.value)}
-                      className="px-2 py-1 border border-gray-200 rounded-lg text-[10px] font-bold uppercase tracking-widest text-blue-400 outline-none focus:ring-1 focus:ring-blue-400 transition"
-                      placeholder="Rol (ej: Valet)"
-                      required
-                    />
-                    <input 
-                      type="text" 
-                      value={extra.name}
-                      onChange={(e) => updateExtraEmployee(extra.id, 'name', e.target.value)}
-                      className="px-2 py-1 border border-gray-200 rounded-lg text-xs font-semibold text-gray-700 outline-none focus:ring-1 focus:ring-blue-400 transition"
-                      placeholder="Nombre"
-                      required
-                    />
-                  </div>
-                  {renderFixedOffSelector(extra.id, extra.name)}
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <button 
-          type="submit"
-          className="w-full py-5 bg-blue-600 text-white rounded-3xl font-black text-lg hover:bg-blue-700 transition transform active:scale-[0.98] shadow-2xl flex items-center justify-center space-x-3"
-        >
-          <PlusIcon />
-          <span>GUARDAR Y GENERAR CUADRANTE</span>
-        </button>
-      </form>
-    </div>
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <nav className="flex gap-1 overflow-x-auto pb-1 -mx-1 px-1" aria-label="Secciones de ajustes">
+        {TABS.map(t => (
+          <button key={t.id} type="button" onClick={() => setTab(t.id)}
+            className={`px-4 py-2 rounded-lg text-sm font-black whitespace-nowrap ${tab === t.id ? 'bg-zinc-900 text-white' : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200'}`}>
+            {t.label}
+          </button>
+        ))}
+      </nav>
+      <div className="min-h-[300px]">{content[tab]}</div>
+      <button type="submit" className="sticky bottom-0 w-full py-4 bg-zinc-900 text-white rounded-xl font-black text-base hover:bg-zinc-800 shadow-lg">
+        Guardar y generar cuadrante
+      </button>
+    </form>
   );
 }

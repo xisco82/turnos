@@ -1,573 +1,777 @@
-import { AppConfig, DayOfWeek, Employee, ScheduleRow, Shift } from './types';
-import { DAYS_OF_WEEK, ShiftConst } from './constants';
+// ─────────────────────────────────────────────────────────────────────────────
+//  MOTOR DE GENERACIÓN AUTOMÁTICA DE TURNOS
+//
+//  1. Las semanas se generan en cadena desde la fecha de inicio de rotación:
+//     las rotaciones (noches, fin de semana libre, tardes) recuerdan quién hizo
+//     qué, y las normas entre semanas (descanso, salida de noche) se cumplen
+//     también de domingo a lunes.
+//  2. Antes de resolver se fijan: cambios manuales, peticiones/bajas, turnos
+//     fijos, libres fijos, noches del conserje, noches rotativas y el fin de
+//     semana libre rotativo.
+//  3. Para cada empleado se calculan todas sus semanas posibles que cumplen sus
+//     normas personales (5+2, libres seguidos, descanso, salida de noche).
+//  4. Una búsqueda con vuelta atrás elige una semana para cada empleado que
+//     cumpla la cobertura de cada día con el reparto más justo. Si es imposible,
+//     una búsqueda local deja el mínimo de incumplimientos y se informa de cada uno.
+// ─────────────────────────────────────────────────────────────────────────────
+import {
+  AppConfig, DayOfWeek, EmployeeConfig, RoleKind, ScheduleIssue, ScheduleRow,
+  Shift, WeekResult,
+} from './types';
+import { ABSENCE_SHIFTS, DAYS_OF_WEEK, toISODate } from './constants';
 
-interface ShiftAssignment {
-  employeeId: string;
-  day: DayOfWeek;
-  shift: Shift;
-}
+// ───────────────────────── fechas ─────────────────────────
 
-// Helper to check if a date is within a request range
-export const isDateInRange = (dateStr: string, startDate: string, endDate: string): boolean => {
-  const d = new Date(dateStr);
-  const start = new Date(startDate);
-  const end = new Date(endDate);
-  d.setHours(0, 0, 0, 0);
-  start.setHours(0, 0, 0, 0);
-  end.setHours(0, 0, 0, 0);
-  return d >= start && d <= end;
+const parseISO = (iso: string): Date => {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(y, (m || 1) - 1, d || 1);
 };
 
-// Helper to get actual date string for a specific DayOfWeek in current week
-export const getDateForDay = (startOfWeek: Date = new Date(), day: DayOfWeek): string => {
-  const base = startOfWeek instanceof Date && !isNaN(startOfWeek.getTime()) ? startOfWeek : new Date();
-  const d = new Date(base);
-  const offset = DAYS_OF_WEEK.indexOf(day);
-  d.setDate(d.getDate() + offset);
-  return d.toISOString().split('T')[0];
+export const addDaysISO = (iso: string, n: number): string => {
+  const d = parseISO(iso);
+  d.setDate(d.getDate() + n);
+  return toISODate(d);
 };
 
-/**
- * Calcula dinámicamente los días posteriores al bloque de cobertura nocturna:
- * Encuentra el último día trabajado de noche y devuelve los 3 días siguientes en la semana.
- */
-export function getPostNightSequenceDays(coverageDays: DayOfWeek[]): DayOfWeek[] {
-  if (!coverageDays || coverageDays.length === 0) return [];
+export const mondayOfISO = (iso: string): string => {
+  const d = parseISO(iso);
+  const day = d.getDay();
+  d.setDate(d.getDate() - day + (day === 0 ? -6 : 1));
+  return toISODate(d);
+};
 
-  // Encontrar el día de cobertura cuyo día siguiente en DAYS_OF_WEEK no esté en coverageDays
-  let lastDay = coverageDays[0];
-  for (const day of coverageDays) {
-    const idx = DAYS_OF_WEEK.indexOf(day);
-    const nextDay = DAYS_OF_WEEK[(idx + 1) % DAYS_OF_WEEK.length];
-    if (!coverageDays.includes(nextDay)) {
-      lastDay = day;
-      break;
-    }
-  }
+export const isDateInRange = (dateStr: string, startDate: string, endDate: string): boolean =>
+  dateStr >= startDate && dateStr <= endDate;
 
-  const lastIdx = DAYS_OF_WEEK.indexOf(lastDay);
-  return [
-    DAYS_OF_WEEK[(lastIdx + 1) % DAYS_OF_WEEK.length],
-    DAYS_OF_WEEK[(lastIdx + 2) % DAYS_OF_WEEK.length],
-    DAYS_OF_WEEK[(lastIdx + 3) % DAYS_OF_WEEK.length],
-  ];
+export const getDateForDay = (weekStart: string | Date, day: DayOfWeek): string => {
+  const iso = typeof weekStart === 'string' ? weekStart : toISODate(weekStart);
+  return addDaysISO(iso, DAYS_OF_WEEK.indexOf(day));
+};
+
+const weeksBetween = (fromISO: string, toISO: string) =>
+  Math.round((parseISO(toISO).getTime() - parseISO(fromISO).getTime()) / (7 * 86400000));
+
+// ───────────────────────── códigos internos ─────────────────────────
+
+const C_L = 0, C_M = 1, C_T = 2, C_N = 3, C_S = 4, C_ABS = 5, C_CUSTOM = 6;
+const CODE_TO_STR = ['L', 'M', 'T', 'N', 'S'];
+const isWorkCode = (c: number) => c === C_M || c === C_T || c === C_N || c === C_S || c === C_CUSTOM;
+const isOffLike = (c: number) => c === C_L || c === C_ABS;
+
+const strToCode = (s: Shift | null | undefined): number => {
+  if (!s) return C_L;
+  const i = CODE_TO_STR.indexOf(s);
+  if (i >= 0) return i;
+  if (ABSENCE_SHIFTS.includes(s)) return C_ABS;
+  return C_CUSTOM;
+};
+
+// ───────────────────────── horas y descanso ─────────────────────────
+
+type Hours = { s: number; e: number };
+
+const hourOf = (h: string): number => {
+  const [hh, mm] = (h || '0').split(':').map(Number);
+  return (hh || 0) + (mm || 0) / 60;
+};
+
+/** Un turno que empieza antes de las 06:00 es la noche que empieza al terminar ese día. */
+const normalizeHours = (start: number, end: number): Hours => {
+  let s = start, e = end;
+  if (e <= s) e += 24;
+  if (s < 6) { s += 24; e += 24; }
+  return { s, e };
+};
+
+const parseCustomHours = (s: string): Hours | null => {
+  const m = /^(\d{1,2})(?::(\d{2}))?\s*-\s*(\d{1,2})(?::(\d{2}))?$/.exec((s || '').trim());
+  if (!m) return null;
+  return normalizeHours(Number(m[1]) + Number(m[2] || 0) / 60, Number(m[3]) + Number(m[4] || 0) / 60);
+};
+
+// ───────────────────────── estado entre semanas ─────────────────────────
+
+interface Hist { work: number; T: number; S: number; weekends: number; nights: number }
+
+interface ChainState {
+  weekendQueue: string[];
+  nightQueue: string[];
+  nightBlock: { empId: string; len: number } | null;
+  prevWeek: Record<string, Shift[]>;
+  hist: Record<string, Hist>;
 }
 
-/**
- * Motor de generación de turnos semanal basado en las reglas del hotel:
- * 1. Todos los empleados a jornada completa trabajan 5 días y libran 2 días consecutivos (L).
- * 2. Mínimos de servicio:
- *    - Lunes a Jueves: 3 Mañanas (M), 2 Tardes (T), 1 Noche (N)
- *    - Viernes a Domingo: 4 Mañanas (M), 2 Tardes (T), 1 Noche (N)
- * 3. Reglas fijas:
- *    - Xisco (Jefe): Libres Viernes y Sábado. Trabaja siempre de Mañana (M).
- *    - Aliz (Subjefe): Libres Domingo y Lunes. Trabaja Martes a Sábado (M o T).
- *    - Oscar (Conserje): Libres Lunes y Martes. Trabaja Noche (N) Miércoles a Domingo.
- *    - Lorena (Ayudante): Libres L-M-X-J. Viernes: Tarde 16-20 (refuerzo). Sábado: M. Domingo: M.
- *    - Peticiones/Bajas: Si Toni (o cualquier otro) está de baja o vacaciones, se respeta estrictamente.
- * 4. Noche de Lunes y Martes:
- *    - La cubre un recepcionista en rotación semanal:
- *      Lunes: N, Martes: N, Miércoles: T, Jueves: L, Viernes: L, Sábado: M/T, Domingo: M/T.
- * 5. Rotación de días libres para el resto de plantilla:
- *    - Las parejas de días libres rotan determinísticamente cada semana según weekNumber.
- * 6. Asignación de turnos M y T:
- *    - 2 personas de Tarde por día, evitando turno T seguido de M al día siguiente siempre que sea posible.
- *    - El resto de personal en servicio hace Mañana (M).
- */
-export function generateWeeklySchedule(
-  config: AppConfig,
-  weekNumber: number,
-  startOfWeek: Date = new Date(),
-  overrides?: Record<string, Shift> // key: `${employeeId}-${day}`
-): ScheduleRow[] {
-  if (!config.isConfigured) return [];
+const initialState = (): ChainState => ({ weekendQueue: [], nightQueue: [], nightBlock: null, prevWeek: {}, hist: {} });
+const emptyHist = (): Hist => ({ work: 0, T: 0, S: 0, weekends: 0, nights: 0 });
 
-  // 1. Preparar lista de empleados: Oscar en 3ª posición después de Aliz (Jefe, Subjefe, Conserje, ...)
-  const cleanAyudantes = (config.ayudantes || []).filter(name => name.trim().toUpperCase() !== 'LORENA');
-  const employees: { id: string; name: string; role: string }[] = [
-    { id: 'jefe', name: config.jefe, role: 'Jefe' },
-    { id: 'subjefe', name: config.subjefe, role: '2º Jefe' },
-    { id: 'conserje', name: config.conserje, role: 'Conserje' },
-    ...config.recepcionistas.map((name, i) => ({ id: `rec-${i}`, name, role: 'Recepcionista' })),
-    ...cleanAyudantes.map((name, i) => ({ id: `ayu-${i}`, name, role: 'Ayudante' })),
-    ...config.extraEmployees.map(e => ({ id: e.id, name: e.name, role: e.role }))
-  ].filter(e => e.name.trim() !== '');
+// ───────────────────────── contexto de empleado ─────────────────────────
 
-  // Mapa de turnos asignados: employeeId -> (DayOfWeek -> Shift)
-  const schedule = new Map<string, Map<DayOfWeek, Shift>>();
-  employees.forEach(e => schedule.set(e.id, new Map<DayOfWeek, Shift>()));
+interface EmpCtx {
+  emp: EmployeeConfig;
+  kind: RoleKind;
+  roleName: string;
+  fixedStr: (Shift | null)[];
+  dom: number[][];
+  prevCodes: number[]; // [día -2, día -1] de la semana anterior
+  prevLastHours: Hours | null;
+  tMin: number;
+  tMax: number;
+  targetWork: number;
+  postNight: 'Afternoon' | 'Off' | null;
+  restOn: boolean;
+  consecutive: boolean;
+  forcedWeekendOff: boolean;
+  expT: number;
+  expS: number;
+  relaxNotes: string[];
+}
 
-  const setShift = (id: string, day: DayOfWeek, shift: Shift) => {
-    schedule.get(id)?.set(day, shift);
+interface Pattern { cells: Int8Array; cost: number }
+
+interface SolveParams { hoursByCode: (Hours | null)[]; minRest: number }
+
+const hoursFor = (ctx: EmpCtx, d: number, code: number, p: SolveParams) =>
+  code === C_CUSTOM ? (ctx.fixedStr[d] ? parseCustomHours(ctx.fixedStr[d]!) : null) : p.hoursByCode[code] || null;
+
+// ───────────────────── semanas posibles de un empleado ─────────────────────
+
+const PATTERN_CAP = 6000;
+
+function enumeratePatterns(ctx: EmpCtx, p: SolveParams): Pattern[] {
+  const out: Pattern[] = [];
+  const seq = new Int8Array(7);
+  const futureWorkable = new Array(8).fill(0);
+  for (let d = 6; d >= 0; d--) futureWorkable[d] = futureWorkable[d + 1] + (ctx.dom[d].some(isWorkCode) ? 1 : 0);
+
+  const cellAt = (i: number): number => (i >= 0 ? seq[i] : ctx.prevCodes[2 + i]);
+  const isFixed = (i: number) => i >= 0 && ctx.fixedStr[i] !== null;
+
+  const stepOk = (d: number): boolean => {
+    const cur = seq[d];
+    const prev = cellAt(d - 1);
+    // Salida de noche
+    if (ctx.postNight && prev === C_N && cur !== C_N && !isFixed(d)) {
+      if (ctx.postNight === 'Afternoon' && cur !== C_T) return false;
+      if (ctx.postNight === 'Off' && !isOffLike(cur)) return false;
+    }
+    if (ctx.postNight === 'Off' && cellAt(d - 2) === C_N && prev !== C_N && isOffLike(prev) && !isFixed(d) && !isOffLike(cur)) return false;
+    // Descanso mínimo entre turnos
+    if (ctx.restOn && isWorkCode(cur) && isWorkCode(prev)) {
+      const ph = d === 0 ? ctx.prevLastHours : hoursFor(ctx, d - 1, prev, p);
+      const ch = hoursFor(ctx, d, cur, p);
+      if (ph && ch) {
+        const exempt = ctx.postNight === 'Afternoon' && prev === C_N && cur === C_T;
+        const bothFixed = isFixed(d) && (d === 0 || isFixed(d - 1));
+        if (24 + ch.s - ph.e < p.minRest && !exempt && !bothFixed) return false;
+      }
+    }
+    return true;
   };
 
-  const getShift = (id: string, day: DayOfWeek): Shift | undefined => {
-    return schedule.get(id)?.get(day);
+  const finalOk = (): boolean => {
+    if (!ctx.consecutive) return true;
+    const runs: { start: number; end: number; hasL: boolean }[] = [];
+    for (let d = 0; d < 7; d++) {
+      if (!isOffLike(seq[d])) continue;
+      const last = runs[runs.length - 1];
+      if (last && last.end === d - 1) { last.end = d; last.hasL = last.hasL || seq[d] === C_L; }
+      else runs.push({ start: d, end: d, hasL: seq[d] === C_L });
+    }
+    const lRuns = runs.filter(r => r.hasL);
+    if (lRuns.length <= 1) return true;
+    // Libres que enlazan con el domingo anterior (lunes) y con el lunes siguiente (domingo).
+    return lRuns.length === 2 && lRuns[0].start === 0 && isOffLike(ctx.prevCodes[1]) && lRuns[1].end === 6;
   };
 
-  const hasShift = (id: string, day: DayOfWeek): boolean => {
-    return schedule.get(id)?.has(day) ?? false;
+  const costOf = (): number => {
+    let cost = 0, t = 0, s = 0, work = 0, last = -1;
+    for (let d = 0; d < 7; d++) {
+      const c = seq[d];
+      if (isWorkCode(c)) work++;
+      if (c === C_T) t++;
+      if (c === C_S) s++;
+      if (ctx.emp.preferredShift !== 'none' && (c === C_M || c === C_T) && ctx.fixedStr[d] === null
+        && CODE_TO_STR[c] !== ctx.emp.preferredShift) cost += 3;
+      if (c === C_M || c === C_T || c === C_S) {
+        if (last >= 0 && last !== c) cost += 2;
+        last = c;
+      } else last = -1;
+    }
+    cost += 2 * (t - ctx.expT) ** 2 + 2 * (s - ctx.expS) ** 2;
+    if (ctx.tMin !== ctx.tMax) cost += 10 * Math.abs(work - ctx.targetWork);
+    if (ctx.emp.weekendRotation && !ctx.forcedWeekendOff && isOffLike(seq[5]) && isOffLike(seq[6])
+      && ctx.fixedStr[5] === null && ctx.fixedStr[6] === null) cost += 25;
+    return Math.round(cost * 10) / 10;
   };
 
-  // 2. APLICAR PETICIONES Y BAJAS (Prioridad máxima)
-  employees.forEach(emp => {
-    DAYS_OF_WEEK.forEach(day => {
-      const dateStr = getDateForDay(startOfWeek, day);
-      const req = config.requests?.find(r => r.employeeId === emp.id && isDateInRange(dateStr, r.startDate, r.endDate));
-      if (req) {
-        const s = req.type === 'Baja' 
-          ? ShiftConst.Paternity 
-          : req.type === 'Vacaciones' 
-          ? ShiftConst.Vacation 
-          : req.type === 'Festivo' 
-          ? ShiftConst.Festive 
-          : ShiftConst.Petition;
-        setShift(emp.id, day, s);
-      }
-    });
-  });
-
-  // 2.1 APLICAR TURNOS FIJOS CONFIGURADOS EN DÍAS CONCRETOS (Jefe, 2º Jefe, etc.)
-  employees.forEach(emp => {
-    const empFixedShifts = config.fixedShifts?.[emp.id] || (config.fixedShifts as any)?.[emp.name];
-    if (empFixedShifts) {
-      DAYS_OF_WEEK.forEach(day => {
-        const fixedShift = empFixedShifts[day];
-        if (fixedShift && !hasShift(emp.id, day)) {
-          setShift(emp.id, day, fixedShift);
-        }
-      });
+  const dfs = (d: number, work: number) => {
+    if (out.length >= PATTERN_CAP) return;
+    if (d === 7) {
+      if (work >= ctx.tMin && finalOk()) out.push({ cells: seq.slice(), cost: costOf() });
+      return;
     }
-  });
-
-  // 3. IDENTIFICAR EMPLEADOS CLAVE
-  const xisco = employees.find(e => e.id === 'jefe');
-  const aliz = employees.find(e => e.id === 'subjefe');
-  const oscar = employees.find(e => e.id === 'conserje');
-
-  // 5. REGLA OSCAR (Conserje de Noche)
-  // La fuente de verdad son los días libres seleccionados en Ajustes
-  const dias_libres_conserje_noche: DayOfWeek[] = config.fixedOffDays?.['conserje'] || [];
-  if (oscar) {
-    dias_libres_conserje_noche.forEach(d => {
-      if (!hasShift(oscar.id, d)) setShift(oscar.id, d, ShiftConst.Off);
-    });
-    // Las noches que no libra, hace Noche
-    DAYS_OF_WEEK.forEach(d => {
-      if (!hasShift(oscar.id, d)) setShift(oscar.id, d, ShiftConst.Night);
-    });
-  }
-
-  // 6. REGLA XISCO (Jefe)
-  if (xisco) {
-    const xiscoFixed = config.fixedOffDays?.['jefe'] !== undefined
-      ? config.fixedOffDays['jefe']
-      : [DayOfWeek.Friday, DayOfWeek.Saturday];
-    xiscoFixed.forEach(d => {
-      if (!hasShift(xisco.id, d)) setShift(xisco.id, d, ShiftConst.Off);
-    });
-    // Si no tiene turno fijo en un día que trabaja, por defecto Xisco hace Mañana (M)
-    DAYS_OF_WEEK.forEach(d => {
-      if (!hasShift(xisco.id, d)) setShift(xisco.id, d, ShiftConst.Morning);
-    });
-  }
-
-  // 7. REGLA ALIZ (2º Jefe)
-  if (aliz) {
-    const alizFixed = config.fixedOffDays?.['subjefe'] !== undefined
-      ? config.fixedOffDays['subjefe']
-      : [DayOfWeek.Sunday, DayOfWeek.Monday];
-    alizFixed.forEach(d => {
-      if (!hasShift(aliz.id, d)) setShift(aliz.id, d, ShiftConst.Off);
-    });
-  }
-
-  // 8. RESPETAR DÍAS LIBRES FIJOS CONFIGURADOS EN EL SETUP FORM
-  employees.forEach(emp => {
-    if (['jefe', 'subjefe', 'conserje'].includes(emp.id)) return;
-    const customFixed = config.fixedOffDays?.[emp.id];
-    if (customFixed && customFixed.length > 0) {
-      customFixed.forEach(d => {
-        if (!hasShift(emp.id, d)) setShift(emp.id, d, ShiftConst.Off);
-      });
+    for (const v of ctx.dom[d]) {
+      const w = work + (isWorkCode(v) ? 1 : 0);
+      if (w > ctx.tMax || w + futureWorkable[d + 1] < ctx.tMin) continue;
+      seq[d] = v;
+      if (stepOk(d)) dfs(d + 1, w);
     }
-  });
+  };
+  dfs(0, 0);
+  out.sort((a, b) => a.cost - b.cost);
+  return out;
+}
 
-  // 9. TURNO DE NOCHE POR OTRO TRABAJADOR (COBERTURA DINÁMICA)
-  // REGLA PRINCIPAL: Días a cubrir = días libres seleccionados del conserje de noche
-  const dias_a_cubrir: DayOfWeek[] = dias_libres_conserje_noche;
-
-  const allRecepcionistas = employees.filter(e => e.role === 'Recepcionista');
-  const availableRecepcionistas = allRecepcionistas.filter(r => {
-    // Si tiene baja o vacaciones en alguno de los días a cubrir, no puede hacer noche
-    const isBlocked = dias_a_cubrir.some(d => {
-      const s = getShift(r.id, d);
-      return [ShiftConst.Paternity, ShiftConst.Vacation].includes(s as any);
-    });
-    return !isBlocked;
-  });
-
-  let nightRecepcionista: { id: string; name: string; role: string } | undefined;
-  let activePostNightRule: 'Afternoon' | 'Off' = config.postNightBehaviour || 'Afternoon';
-
-  if (dias_a_cubrir.length > 0 && availableRecepcionistas.length > 0) {
-    const nightIndex = Math.abs(weekNumber) % availableRecepcionistas.length;
-    nightRecepcionista = availableRecepcionistas[nightIndex];
-
-    // Preferencia individual del empleado o regla global configurada
-    if (config.employeePostNightPreferences) {
-      if (config.employeePostNightPreferences[nightRecepcionista.id]) {
-        activePostNightRule = config.employeePostNightPreferences[nightRecepcionista.id];
-      } else if (config.employeePostNightPreferences[nightRecepcionista.name]) {
-        activePostNightRule = config.employeePostNightPreferences[nightRecepcionista.name];
-      }
-    }
-
-    // Asignar el turno de Noche (N) a todos los días que necesitan cobertura
-    dias_a_cubrir.forEach(d => {
-      if (!hasShift(nightRecepcionista.id, d)) {
-        setShift(nightRecepcionista.id, d, ShiftConst.Night);
-      }
-    });
-
-    // Calcular días posteriores dinámicamente según la salida del bloque nocturno
-    const [day1PostNight, day2PostNight, day3PostNight] = getPostNightSequenceDays(dias_a_cubrir);
-
-    if (activePostNightRule === 'Off') {
-      // REGLA: 2 DÍAS LIBRES CONSECUTIVOS DIRECTOS TRAS LA NOCHE
-      if (day1PostNight && !hasShift(nightRecepcionista.id, day1PostNight)) {
-        setShift(nightRecepcionista.id, day1PostNight, ShiftConst.Off);
-      }
-      if (day2PostNight && !hasShift(nightRecepcionista.id, day2PostNight)) {
-        setShift(nightRecepcionista.id, day2PostNight, ShiftConst.Off);
-      }
-    } else {
-      // REGLA: TURNO DE TARDE DESPUÉS DE LA NOCHE
-      // Día 1 entra de Tarde (descansa por la mañana y trabaja de 16:00 a 00:00)
-      if (day1PostNight && !hasShift(nightRecepcionista.id, day1PostNight)) {
-        setShift(nightRecepcionista.id, day1PostNight, ShiftConst.Afternoon);
-      }
-      // Días 2 y 3 son sus 2 días libres consecutivos
-      if (day2PostNight && !hasShift(nightRecepcionista.id, day2PostNight)) {
-        setShift(nightRecepcionista.id, day2PostNight, ShiftConst.Off);
-      }
-      if (day3PostNight && !hasShift(nightRecepcionista.id, day3PostNight)) {
-        setShift(nightRecepcionista.id, day3PostNight, ShiftConst.Off);
-      }
-    }
-  }
-
-  // 10. ASIGNAR LOS 2 DÍAS LIBRES CONSECUTIVOS AL RESTO DE LA PLANTILLA
-  const staffToAssignOffs = employees.filter(emp => {
-    if (emp.id === 'jefe' || emp.id === 'subjefe' || emp.id === 'conserje') return false;
-    if (emp.id === nightRecepcionista?.id) return false;
-    // Si ya tiene 2 o más días de baja/vacaciones/libres fijos, no añadir más
-    const existingOffs = Array.from(schedule.get(emp.id)?.values() || []).filter(
-      s => [ShiftConst.Off, ShiftConst.Vacation, ShiftConst.Paternity].includes(s)
-    ).length;
-    return existingOffs < 2;
-  });
-
-  // Para los Ayudantes: desfasar sus días libres para que NUNCA coincidan en descanso
-  // Así siempre habrá exactamente un ayudante disponible para cubrir la tarde requerida
-  const ayudantesToAssign = staffToAssignOffs.filter(e => e.role === 'Ayudante');
-  const recepcionistasToAssign = staffToAssignOffs.filter(e => e.role !== 'Ayudante');
-
-  const ayudanteOffPatterns: DayOfWeek[][] = [
-    [DayOfWeek.Monday, DayOfWeek.Tuesday],
-    [DayOfWeek.Wednesday, DayOfWeek.Thursday],
-    [DayOfWeek.Friday, DayOfWeek.Saturday],
-    [DayOfWeek.Sunday, DayOfWeek.Monday]
+/** Relaja normas personales sólo si sus turnos fijos/peticiones las hacen imposibles. */
+function patternsWithRelax(ctx: EmpCtx, p: SolveParams): Pattern[] {
+  let pats = enumeratePatterns(ctx, p);
+  if (pats.length) return pats;
+  const steps: [string, () => void][] = [
+    ['libres seguidos', () => { ctx.consecutive = false; }],
+    ['salida de noche', () => { ctx.postNight = null; }],
+    ['descanso mínimo', () => { ctx.restOn = false; }],
+    ['días trabajados por semana', () => { ctx.tMin = 0; ctx.tMax = 7; }],
   ];
+  for (const [label, apply] of steps) {
+    apply();
+    ctx.relaxNotes.push(label);
+    pats = enumeratePatterns(ctx, p);
+    if (pats.length) return pats;
+  }
+  return pats;
+}
 
-  ayudantesToAssign.forEach((emp, idx) => {
-    const existingOffsCount = Array.from(schedule.get(emp.id)?.values() || []).filter(
-      s => [ShiftConst.Off, ShiftConst.Vacation, ShiftConst.Paternity].includes(s)
-    ).length;
-    if (existingOffsCount >= 2) return;
+// ───────────────────── cobertura diaria ─────────────────────
 
-    // Desfase matemático: idx * 2 garantiza que Inés y Jakeline tengan bloques de libres distintos
-    const patternIdx = (idx * 2 + weekNumber) % ayudanteOffPatterns.length;
-    const assignedPair = ayudanteOffPatterns[patternIdx];
+interface DayLimits {
+  minM: number; maxM: number; minT: number; maxT: number;
+  minS: number; maxS: number; minN: number; maxN: number;
+  helpersMax: number; recepRequired: boolean;
+}
 
-    if (!hasShift(emp.id, assignedPair[0]) && !hasShift(emp.id, assignedPair[1])) {
-      setShift(emp.id, assignedPair[0], ShiftConst.Off);
-      setShift(emp.id, assignedPair[1], ShiftConst.Off);
-    } else {
-      for (const pair of ayudanteOffPatterns) {
-        if (!hasShift(emp.id, pair[0]) && !hasShift(emp.id, pair[1])) {
-          setShift(emp.id, pair[0], ShiftConst.Off);
-          setShift(emp.id, pair[1], ShiftConst.Off);
-          break;
+function buildLimits(config: AppConfig): DayLimits[] {
+  const r = config.rules;
+  return DAYS_OF_WEEK.map(day => {
+    const c = config.coverage[day];
+    return {
+      minM: c.M.min, maxM: Math.max(c.M.min, c.M.max),
+      minT: c.T.min, maxT: Math.max(c.T.min, c.T.max),
+      minS: c.S.enabled ? c.S.min : 0, maxS: c.S.enabled ? Math.max(c.S.min, c.S.max) : 0,
+      minN: r.nightRotation.enabled ? 0 : c.N,
+      maxN: r.nightRotation.enabled ? 99 : c.N,
+      helpersMax: r.noTwoHelpersAfternoon ? 1 : 99,
+      recepRequired: r.receptionistRequiredAfternoon && c.T.min > 0,
+    };
+  });
+}
+
+// ───────────────────────── búsqueda exacta ─────────────────────────
+
+/** Nodos para encontrar una solución válida / para mejorar una ya encontrada. */
+const FIND_BUDGET = 40000;
+const IMPROVE_BUDGET = 15000;
+/** Tiempo máximo buscando una solución perfecta antes de dar el mejor cuadrante posible. */
+const SEARCH_TIME_MS = 600;
+
+function solve(ctxs: EmpCtx[], pats: Pattern[][], limits: DayLimits[]): { choice: number[]; exact: boolean } {
+  const n = ctxs.length;
+  // La búsqueda local da primero una buena solución; la búsqueda exacta intenta encontrar/mejorar.
+  const ls = localSearch(ctxs, pats, limits);
+  let best = ls.violations === 0 ? ls.cost + 0.001 : Infinity;
+  let bestChoice: number[] | null = ls.violations === 0 ? ls.choice : null;
+
+  // Varios órdenes de prueba: si uno se atasca, otro suele encontrar la solución enseguida.
+  const bySize = [...Array(n).keys()].sort((a, b) => pats[a].length - pats[b].length);
+  const kindRank = (i: number) => (ctxs[i].kind === 'ayudante' ? 0 : ctxs[i].kind === 'recepcion' ? 1 : 2);
+  const byKind = [...bySize].sort((a, b) => kindRank(a) - kindRank(b));
+  let seed = 987;
+  const shuffled = () => {
+    const o = [...bySize];
+    for (let i = o.length - 1; i > 0; i--) { seed = (seed * 1103515245 + 12345) & 0x7fffffff; const j = seed % (i + 1); [o[i], o[j]] = [o[j], o[i]]; }
+    return o;
+  };
+  const orders = [bySize, byKind, [...bySize].reverse()];
+  const deadline = Date.now() + SEARCH_TIME_MS;
+  for (let attempt = 0; ; attempt++) {
+    const order = attempt < orders.length ? orders[attempt] : shuffled();
+    const found = runBranchAndBound(ctxs, pats, limits, order, best);
+    if (found) { best = found.cost; bestChoice = found.choice; break; }
+    if (bestChoice || (attempt >= orders.length && Date.now() > deadline)) break;
+  }
+  if (bestChoice) return { choice: bestChoice, exact: true };
+  return { choice: ls.choice, exact: false };
+}
+
+function runBranchAndBound(ctxs: EmpCtx[], pats: Pattern[][], limits: DayLimits[], order: number[], initialBest: number)
+  : { choice: number[]; cost: number } | null {
+  const n = ctxs.length;
+  const kinds = order.map(i => ctxs[i].kind);
+  const can = order.map(i => {
+    const m = Array.from({ length: 7 }, () => new Int8Array(5));
+    for (const pt of pats[i]) for (let d = 0; d < 7; d++) { const c = pt.cells[d]; if (c >= 1 && c <= 4) m[d][c] = 1; }
+    return m;
+  });
+  const capN = new Int16Array(7), capRT = new Int16Array(7);
+  // capU[d*8+q]: cuántas personas pendientes pueden cubrir algún turno del grupo q (bits M=1, T=2, S=4)
+  const capU = new Int16Array(56);
+  const masks = can.map(m => m.map(x => (x[C_M] ? 1 : 0) | (x[C_T] ? 2 : 0) | (x[C_S] ? 4 : 0)));
+  const addCap = (k: number, sign: number) => {
+    for (let d = 0; d < 7; d++) {
+      const mk = masks[k][d];
+      if (mk) for (let q = 1; q < 8; q++) if (mk & q) capU[d * 8 + q] += sign;
+      capN[d] += sign * can[k][d][C_N];
+      if (kinds[k] === 'recepcion') capRT[d] += sign * can[k][d][C_T];
+    }
+  };
+  for (let k = 0; k < n; k++) addCap(k, 1);
+
+  const cM = new Int16Array(7), cT = new Int16Array(7), cN = new Int16Array(7), cS = new Int16Array(7), cH = new Int16Array(7), cR = new Int16Array(7);
+  const apply = (k: number, pt: Pattern, sign: number) => {
+    for (let d = 0; d < 7; d++) {
+      const c = pt.cells[d];
+      if (c === C_M) cM[d] += sign; else if (c === C_N) cN[d] += sign; else if (c === C_S) cS[d] += sign;
+      else if (c === C_T) { cT[d] += sign; if (kinds[k] === 'ayudante') cH[d] += sign; if (kinds[k] === 'recepcion') cR[d] += sign; }
+    }
+  };
+  const feasible = (): boolean => {
+    for (let d = 0; d < 7; d++) {
+      const L = limits[d];
+      if (cM[d] > L.maxM || cT[d] > L.maxT || cS[d] > L.maxS || cN[d] > L.maxN || cH[d] > L.helpersMax) return false;
+      if (cN[d] + capN[d] < L.minN) return false;
+      if (L.recepRequired && cR[d] + capRT[d] < 1) return false;
+      // Cada persona sólo cubre un turno al día: lo que falta de cada grupo de turnos
+      // no puede superar a las personas que todavía pueden cubrirlo.
+      const nm = L.minM - cM[d], nt = L.minT - cT[d], ns = L.minS - cS[d];
+      const needM = nm > 0 ? nm : 0, needT = nt > 0 ? nt : 0, needS = ns > 0 ? ns : 0;
+      const b = d * 8;
+      if (needM > capU[b + 1] || needT > capU[b + 2] || needS > capU[b + 4]
+        || needM + needT > capU[b + 3] || needM + needS > capU[b + 5] || needT + needS > capU[b + 6]
+        || needM + needT + needS > capU[b + 7]) return false;
+    }
+    return true;
+  };
+
+  const suffixMin = new Array(n + 1).fill(0);
+  for (let k = n - 1; k >= 0; k--) suffixMin[k] = suffixMin[k + 1] + (pats[order[k]][0]?.cost ?? 0);
+
+  let best = initialBest;
+  let bestChoice: number[] | null = null;
+  const cur = new Array(n).fill(0);
+  let nodes = 0;
+  const overBudget = () => nodes > (bestChoice || initialBest < Infinity ? IMPROVE_BUDGET : FIND_BUDGET);
+
+  const dfs = (k: number, cost: number) => {
+    if (k === n) { if (cost < best) { best = cost; bestChoice = [...cur]; nodes = 0; } return; }
+    const i = order[k];
+    addCap(k, -1);
+    for (let j = 0; j < pats[i].length; j++) {
+      const pt = pats[i][j];
+      if (cost + pt.cost + suffixMin[k + 1] >= best) break;
+      nodes++;
+      if (overBudget()) break;
+      apply(k, pt, 1);
+      if (feasible()) { cur[i] = j; dfs(k + 1, cost + pt.cost); }
+      apply(k, pt, -1);
+    }
+    addCap(k, 1);
+  };
+  if (feasible()) dfs(0, 0);
+  return bestChoice ? { choice: bestChoice, cost: best } : null;
+}
+
+/** Sin solución perfecta: cuadrante con los mínimos incumplimientos posibles. */
+function localSearch(ctxs: EmpCtx[], pats: Pattern[][], limits: DayLimits[]): { choice: number[]; violations: number; cost: number } {
+  const n = ctxs.length;
+  const kinds = ctxs.map(c => c.kind);
+  let seed = 12345;
+  const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+
+  const dayViolation = (cnt: number[], L: DayLimits) => {
+    const [m, t, nn, s, h, r] = cnt;
+    // Si falta gente, mejor que falte de mañana que de tarde o de noche.
+    let v = Math.max(0, L.minM - m) + Math.max(0, m - L.maxM) + Math.max(0, L.minT - t) * 3 + Math.max(0, t - L.maxT)
+      + Math.max(0, L.minS - s) + Math.max(0, s - L.maxS) + Math.max(0, L.minN - nn) * 3 + Math.max(0, nn - L.maxN)
+      + Math.max(0, h - L.helpersMax) * 3;
+    if (L.recepRequired && r === 0) v += 3;
+    return v;
+  };
+  const contrib = (k: number, pt: Pattern, d: number, cnt: number[], sign: number) => {
+    const c = pt.cells[d];
+    if (c === C_M) cnt[0] += sign; else if (c === C_N) cnt[2] += sign; else if (c === C_S) cnt[3] += sign;
+    else if (c === C_T) { cnt[1] += sign; if (kinds[k] === 'ayudante') cnt[4] += sign; if (kinds[k] === 'recepcion') cnt[5] += sign; }
+  };
+
+  let bestChoice = new Array(n).fill(0);
+  let bestScore = Infinity, bestV = Infinity, bestC = 0;
+  for (let restart = 0; restart < 10 && bestV > 0; restart++) {
+    const choice = pats.map(p => (restart === 0 ? 0 : Math.floor(rand() * Math.min(p.length, 25))));
+    const counts = Array.from({ length: 7 }, () => [0, 0, 0, 0, 0, 0]);
+    for (let k = 0; k < n; k++) for (let d = 0; d < 7; d++) contrib(k, pats[k][choice[k]], d, counts[d], 1);
+    let lastMoved = -1, idle = 0;
+    for (let iter = 0; iter < 60 * n && idle < 2 * n; iter++) {
+      let k = Math.floor(rand() * n);
+      if (k === lastMoved) k = (k + 1) % n;
+      idle++;
+      const curPt = pats[k][choice[k]];
+      let bestJ = choice[k], bestDelta = 0;
+      for (let j = 0; j < pats[k].length; j++) {
+        if (j === choice[k]) continue;
+        const pt = pats[k][j];
+        let delta = pt.cost - curPt.cost;
+        for (let d = 0; d < 7; d++) {
+          if (pt.cells[d] === curPt.cells[d]) continue;
+          const before = dayViolation(counts[d], limits[d]);
+          contrib(k, curPt, d, counts[d], -1); contrib(k, pt, d, counts[d], 1);
+          const after = dayViolation(counts[d], limits[d]);
+          contrib(k, pt, d, counts[d], -1); contrib(k, curPt, d, counts[d], 1);
+          delta += (after - before) * 1000;
         }
+        if (delta < bestDelta || (delta === bestDelta && delta <= 0 && rand() < 0.05)) { bestDelta = delta; bestJ = j; }
+      }
+      if (bestDelta < 0) idle = 0;
+      if (bestJ !== choice[k]) {
+        for (let d = 0; d < 7; d++) { contrib(k, curPt, d, counts[d], -1); contrib(k, pats[k][bestJ], d, counts[d], 1); }
+        choice[k] = bestJ;
+        lastMoved = k;
       }
     }
+    let v = 0, c = 0;
+    for (let d = 0; d < 7; d++) v += dayViolation(counts[d], limits[d]);
+    for (let k = 0; k < n; k++) c += pats[k][choice[k]].cost;
+    if (v * 1000 + c < bestScore) { bestScore = v * 1000 + c; bestChoice = [...choice]; bestV = v; bestC = c; }
+  }
+  return { choice: bestChoice, violations: bestV, cost: bestC };
+}
+
+// ───────────────────────── una semana ─────────────────────────
+
+const roleOf = (config: AppConfig, emp: EmployeeConfig) =>
+  config.roles.find(r => r.id === emp.roleId) || { id: '', name: 'Sin rol', kind: 'otro' as RoleKind };
+
+const syncQueue = (queue: string[], eligible: string[]): string[] => {
+  const kept = queue.filter(id => eligible.includes(id));
+  eligible.forEach(id => { if (!kept.includes(id)) kept.push(id); });
+  return kept;
+};
+
+function solveWeek(config: AppConfig, weekStart: string, state: ChainState): { result: WeekResult; next: ChainState } {
+  const rules = config.rules;
+  const employees = config.employees.filter(e => e.active && e.name.trim() !== '');
+  const overrides = config.overridesByWeek?.[weekStart] || {};
+  const workDays = rules.weeklyDays.enabled ? rules.weeklyDays.workDays : 5;
+  const offDays = 7 - workDays;
+  const notes: ScheduleIssue[] = [];
+
+  const sh = config.shifts;
+  const hoursByCode: (Hours | null)[] = [
+    null,
+    normalizeHours(hourOf(sh.M.start), hourOf(sh.M.end)),
+    normalizeHours(hourOf(sh.T.start), hourOf(sh.T.end)),
+    normalizeHours(hourOf(sh.N.start), hourOf(sh.N.end)),
+    normalizeHours(hourOf(sh.S.start), hourOf(sh.S.end)),
+  ];
+  const params: SolveParams = { hoursByCode, minRest: rules.minRest.hours };
+
+  // 1. Celdas fijas: cambio manual > petición/baja > turno fijo > libre fijo
+  const fixed: Record<string, (Shift | null)[]> = {};
+  employees.forEach(emp => {
+    fixed[emp.id] = DAYS_OF_WEEK.map((day, d) => {
+      const ov = overrides[`${emp.id}|${day}`];
+      if (ov) return ov;
+      const date = addDaysISO(weekStart, d);
+      const req = config.requests?.find(r => r.employeeId === emp.id && r.status !== 'rejected' && isDateInRange(date, r.startDate, r.endDate));
+      if (req) return req.type === 'Baja' ? 'BP' : req.type === 'Vacaciones' ? 'V' : req.type === 'Festivo' ? 'F' : 'P';
+      const fs = emp.fixedShifts?.[day];
+      if (fs) return fs;
+      if (emp.fixedOffDays?.includes(day)) return 'L';
+      return null;
+    });
+  });
+  const isFree = (id: string, d: number) => fixed[id][d] === null;
+  const absCount = (id: string) => fixed[id].filter(s => s !== null && ABSENCE_SHIFTS.includes(s)).length;
+  const targetWorkOf = (id: string) => {
+    const abs = absCount(id);
+    return rules.absencesCountAsOff ? Math.max(0, 7 - abs - Math.max(0, offDays - abs)) : Math.max(0, 7 - abs - offDays);
+  };
+
+  // 2. Conserje(s) de noche fijo(s)
+  employees.filter(e => e.permanentNight).forEach(emp => {
+    const f = fixed[emp.id];
+    let offs = f.filter(s => s === 'L' || (s !== null && ABSENCE_SHIFTS.includes(s) && rules.absencesCountAsOff)).length;
+    const need = rules.weeklyDays.enabled ? offDays : 0;
+    for (let d = 0; d < 7 && offs < need; d++) {
+      if (f[d] === null && (d === 6 || f[d + 1] === null || f[d + 1] === 'L')) { f[d] = 'L'; offs++; }
+    }
+    for (let d = 0; d < 7; d++) if (f[d] === null) f[d] = 'N';
   });
 
-  // Parejas consecutivas óptimas calculadas matemáticamente para cuadrar la plantilla según la regla post-noche:
-  const rotatingOffPatterns: DayOfWeek[][] = activePostNightRule === 'Off'
-    ? [
-        [DayOfWeek.Monday, DayOfWeek.Tuesday],
-        [DayOfWeek.Tuesday, DayOfWeek.Wednesday],
-        [DayOfWeek.Thursday, DayOfWeek.Friday],
-        [DayOfWeek.Friday, DayOfWeek.Saturday],
-        [DayOfWeek.Saturday, DayOfWeek.Sunday]
-      ]
-    : [
-        [DayOfWeek.Monday, DayOfWeek.Tuesday],
-        [DayOfWeek.Tuesday, DayOfWeek.Wednesday],
-        [DayOfWeek.Wednesday, DayOfWeek.Thursday],
-        [DayOfWeek.Wednesday, DayOfWeek.Thursday],
-        [DayOfWeek.Saturday, DayOfWeek.Sunday]
-      ];
+  // 3. Noches rotativas (cubren las noches que no cubre nadie fijo)
+  const nightRotationIds: string[] = [];
+  let nightQueue = syncQueue(state.nightQueue, employees.filter(e => e.nightRotation && e.canNight && !e.permanentNight).map(e => e.id));
+  let block: { empId: string; len: number; lastDay: number } | null =
+    state.nightBlock && employees.some(e => e.id === state.nightBlock!.empId) ? { ...state.nightBlock, lastDay: -1 } : null;
+  const uncoveredNights: string[] = [];
+  const nightNeed = DAYS_OF_WEEK.map((day, d) => config.coverage[day].N - employees.filter(e => fixed[e.id][d] === 'N').length);
 
-  // Asignar a cada recepcionista su patrón de libres rotado según weekNumber
-  recepcionistasToAssign.forEach((emp, idx) => {
-    const existingOffsCount = Array.from(schedule.get(emp.id)?.values() || []).filter(
-      s => [ShiftConst.Off, ShiftConst.Vacation, ShiftConst.Paternity].includes(s)
-    ).length;
-    if (existingOffsCount >= 2) return;
-
-    // Calcular índice del patrón rotado
-    const patternIdx = (idx + weekNumber) % rotatingOffPatterns.length;
-    const assignedPair = rotatingOffPatterns[patternIdx];
-
-    // Si los dos días están libres, asignarlos
-    if (!hasShift(emp.id, assignedPair[0]) && !hasShift(emp.id, assignedPair[1])) {
-      setShift(emp.id, assignedPair[0], ShiftConst.Off);
-      setShift(emp.id, assignedPair[1], ShiftConst.Off);
-    } else {
-      // Fallback: buscar otra pareja consecutiva disponible
-      const allConsecutivePairs: DayOfWeek[][] = [
-        [DayOfWeek.Saturday, DayOfWeek.Sunday],
-        [DayOfWeek.Sunday, DayOfWeek.Monday],
-        [DayOfWeek.Monday, DayOfWeek.Tuesday],
-        [DayOfWeek.Tuesday, DayOfWeek.Wednesday],
-        [DayOfWeek.Wednesday, DayOfWeek.Thursday],
-        [DayOfWeek.Thursday, DayOfWeek.Friday],
-        [DayOfWeek.Friday, DayOfWeek.Saturday]
-      ];
-      let assigned = false;
-      for (const pair of allConsecutivePairs) {
-        if (!hasShift(emp.id, pair[0]) && !hasShift(emp.id, pair[1])) {
-          setShift(emp.id, pair[0], ShiftConst.Off);
-          setShift(emp.id, pair[1], ShiftConst.Off);
-          assigned = true;
-          break;
-        }
-      }
-      if (!assigned) {
-        // Asignar los días restantes hasta 2
-        let currentOffs = Array.from(schedule.get(emp.id)?.values() || []).filter(
-          s => [ShiftConst.Off, ShiftConst.Vacation, ShiftConst.Paternity].includes(s)
-        ).length;
-        for (const d of DAYS_OF_WEEK) {
-          if (currentOffs >= 2) break;
-          if (!hasShift(emp.id, d)) {
-            setShift(emp.id, d, ShiftConst.Off);
-            currentOffs++;
+  if (rules.nightRotation.enabled) {
+    const maxLen = Math.max(1, rules.nightRotation.nightsPerBlock);
+    for (let d = 0; d < 7; d++) {
+      let need = nightNeed[d];
+      if (need <= 0) { block = null; continue; }
+      while (need > 0) {
+        let chosen: string | null = null;
+        if (block && block.lastDay === d - 1 && block.len < maxLen && isFree(block.empId, d)) {
+          chosen = block.empId;
+          block.len++;
+        } else {
+          let runLen = 0;
+          for (let k = d; k < 7 && nightNeed[k] > 0 && runLen < maxLen; k++) runLen++;
+          const avail = nightQueue.filter(id => isFree(id, d) && !nightRotationIds.includes(id));
+          const fully = avail.find(id => { for (let k = d; k < d + runLen; k++) if (!isFree(id, k)) return false; return true; });
+          chosen = fully || avail[0] || null;
+          if (chosen) {
+            block = { empId: chosen, len: 1, lastDay: d };
+            const c = chosen;
+            nightQueue = [...nightQueue.filter(id => id !== c), c];
           }
         }
+        if (!chosen) { uncoveredNights.push(DAYS_OF_WEEK[d]); break; }
+        fixed[chosen][d] = 'N';
+        if (!nightRotationIds.includes(chosen)) nightRotationIds.push(chosen);
+        block!.lastDay = d;
+        need--;
       }
     }
-  });
+  }
+  const nextBlock = block && block.lastDay === 6 ? { empId: block.empId, len: block.len } : null;
 
-  // 11. ASIGNACIÓN DE TURNOS DE TRABAJO (Tarde 'T' y Mañana 'M') DÍA A DÍA
-  // Requisitos obligatorios pedidos por el usuario:
-  // 1. MÁXIMOS DIARIOS:
-  //    - Lunes, Martes, Miércoles y Jueves: MÁXIMO 3 de Mañana (M) y 2 de Tarde (T).
-  //    - Viernes, Sábado y Domingo: MÁXIMO 4 de Mañana (M) y 2 de Tarde (T).
-  // 2. DESCANSO ENTRE JORNADAS:
-  //    - "SI TRABAJA DE TARDE NO TRABAJE DE MAÑANA":
-  //      Si un empleado trabajó de Tarde (T) ayer, TIENE PROHIBIDO trabajar de Mañana (M) hoy.
-  //      Tampoco se le asigna T hoy si ya tiene fijada una Mañana (M) mañana.
-  // 3. COMPOSICIÓN DE LA TARDE:
-  //    - "POR LAS TARDES NO PUEDE HABER 2 AYUDANTES JUNTOS. SIEMPRE TIENE QUE SER UN RECEPCIONISTA Y UN AYUDANTE."
-  //      Máximo estricto de 1 Ayudante en turno de Tarde por día.
-  DAYS_OF_WEEK.forEach((day, dayIndex) => {
-    const isWeekend = [DayOfWeek.Friday, DayOfWeek.Saturday, DayOfWeek.Sunday].includes(day);
-    const maxM = isWeekend ? 4 : 3;
-    const maxT = 2;
+  // 4. Contextos
+  const totalT = DAYS_OF_WEEK.reduce((a, day) => a + config.coverage[day].T.min, 0);
+  const totalS = DAYS_OF_WEEK.reduce((a, day) => a + (config.coverage[day].S.enabled ? config.coverage[day].S.min : 0), 0);
+  const sumWork = (list: EmployeeConfig[]) => list.reduce((a, e) => a + targetWorkOf(e.id), 0) || 1;
+  const ratioT = totalT / sumWork(employees.filter(e => e.canAfternoon && !e.permanentNight));
+  const ratioS = totalS / sumWork(employees.filter(e => e.canSpecial && !e.permanentNight));
 
-    const prevDay = dayIndex > 0 ? DAYS_OF_WEEK[dayIndex - 1] : undefined;
-    const nextDay = dayIndex < DAYS_OF_WEEK.length - 1 ? DAYS_OF_WEEK[dayIndex + 1] : undefined;
-
-    // Helper: ¿Trabajó de Tarde el día anterior?
-    const workedYesterdayT = (empId: string) => {
-      if (!prevDay) return false;
-      return getShift(empId, prevDay) === ShiftConst.Afternoon;
+  const buildCtx = (emp: EmployeeConfig, forcedWeekendOff: boolean): EmpCtx => {
+    const role = roleOf(config, emp);
+    const f = fixed[emp.id];
+    const prev = state.prevWeek[emp.id] || [];
+    const prevLast = prev[6] ?? null;
+    const prevLastCode = strToCode(prevLast);
+    const dom = DAYS_OF_WEEK.map((day, d) => {
+      if (f[d] !== null) return [strToCode(f[d])];
+      if (emp.permanentNight) return [C_N, C_L];
+      const c = config.coverage[day];
+      const opts: number[] = [];
+      if (emp.canMorning) opts.push(C_M);
+      if (emp.canAfternoon) opts.push(C_T);
+      if (emp.canSpecial && c.S.enabled && c.S.max > 0) opts.push(C_S);
+      if (emp.canNight && !rules.nightRotation.enabled) opts.push(C_N);
+      opts.push(C_L);
+      return opts;
+    });
+    const target = targetWorkOf(emp.id);
+    const h = state.hist[emp.id] || emptyHist();
+    const fair = rules.fairRotation ? 0.5 : 0;
+    const expT = emp.canAfternoon && !emp.permanentNight ? Math.max(0, Math.min(target, ratioT * target + fair * (ratioT * h.work - h.T))) : 0;
+    const expS = emp.canSpecial && !emp.permanentNight ? Math.max(0, Math.min(target, ratioS * target + fair * (ratioS * h.work - h.S))) : 0;
+    const fixedLs = f.map((s, d) => (s === 'L' ? d : -1)).filter(d => d >= 0);
+    const fixedLsContiguous = fixedLs.every((d, i) => i === 0 || d === fixedLs[i - 1] + 1);
+    const behaviour = emp.postNight === 'default' ? rules.postNight.defaultBehaviour : emp.postNight;
+    return {
+      emp, kind: role.kind, roleName: role.name, fixedStr: f, dom,
+      prevCodes: [strToCode(prev[5] ?? null), prevLastCode],
+      prevLastHours: prevLastCode === C_CUSTOM ? parseCustomHours(prevLast!) : (isWorkCode(prevLastCode) ? hoursByCode[prevLastCode] : null),
+      tMin: rules.weeklyDays.enabled ? target : 0,
+      tMax: rules.weeklyDays.enabled ? target : 7 - absCount(emp.id),
+      targetWork: target,
+      postNight: rules.postNight.enabled && !emp.permanentNight ? behaviour : null,
+      restOn: rules.minRest.enabled,
+      consecutive: rules.consecutiveOffs && fixedLsContiguous,
+      forcedWeekendOff, expT, expS, relaxNotes: [],
     };
+  };
 
-    // Helper: ¿Tiene turno de Mañana fijado para mañana?
-    const hasMorningTomorrow = (empId: string) => {
-      if (!nextDay) return false;
-      return getShift(empId, nextDay) === ShiftConst.Morning;
-    };
-
-    // Contar cuántas Tardes y Mañanas ya están asignadas este día
-    let countT = 0;
-    let countM = 0;
-    let countAyudanteT = 0;
-    let countRecepT = 0;
-
-    employees.forEach(emp => {
-      const s = getShift(emp.id, day);
-      if (s === ShiftConst.Afternoon) {
-        countT++;
-        if (emp.role === 'Ayudante') countAyudanteT++;
-        else countRecepT++;
+  // 5. Fin de semana libre rotativo
+  let weekendQueue = syncQueue(state.weekendQueue, employees.filter(e => e.weekendRotation && !e.permanentNight).map(e => e.id));
+  let weekendOffId: string | null = null;
+  if (rules.weekendRotation) {
+    const candidates = [
+      ...weekendQueue.filter(id => !nightRotationIds.includes(id)),
+      ...weekendQueue.filter(id => nightRotationIds.includes(id)),
+    ];
+    for (const id of candidates) {
+      const f = fixed[id];
+      if (!isFree(id, 5) || !isFree(id, 6)) continue;
+      f[5] = 'L'; f[6] = 'L';
+      const emp = employees.find(e => e.id === id)!;
+      if (enumeratePatterns(buildCtx(emp, true), params).length > 0) {
+        weekendOffId = id;
+        weekendQueue = [...weekendQueue.filter(x => x !== id), id];
+        break;
       }
-      if (s === ShiftConst.Morning) countM++;
-    });
-
-    // 11.A ASIGNACIÓN DE TURNOS DE TARDE (T)
-    // REGLA: SIEMPRE 1 RECEPCIONISTA (O SUBJEFE) Y 1 AYUDANTE. NUNCA 2 AYUDANTES JUNTOS.
-    let neededT = Math.max(0, maxT - countT);
-
-    if (neededT > 0) {
-      // Elegibilidad para Tarde hoy:
-      // - No tiene turno hoy
-      // - No es el Jefe (Xisco trabaja solo de Mañana)
-      // - No es el Conserje (Oscar realiza noche)
-      // - No tiene Mañana fijada para mañana (para no violar T -> M)
-      const canDoT = (emp: { id: string; role: string }) => {
-        if (hasShift(emp.id, day)) return false;
-        if (emp.id === 'jefe' || emp.id === 'conserje') return false;
-        if (hasMorningTomorrow(emp.id)) return false;
-        return true;
-      };
-
-      // 1. Asignar 1 Ayudante a Tarde si aún no hay ninguno
-      if (countAyudanteT < 1 && neededT > 0) {
-        const ayudanteCandidates = employees.filter(e => e.role === 'Ayudante' && canDoT(e));
-        // Priorizar al que trabajó T ayer (mantiene bloque de tarde sin conflicto con M)
-        // luego al que menos T lleve esta semana
-        ayudanteCandidates.sort((a, b) => {
-          const aPrevT = workedYesterdayT(a.id) ? 1 : 0;
-          const bPrevT = workedYesterdayT(b.id) ? 1 : 0;
-          if (aPrevT !== bPrevT) return bPrevT - aPrevT;
-          const aT = Array.from(schedule.get(a.id)?.values() || []).filter(s => s === ShiftConst.Afternoon).length;
-          const bT = Array.from(schedule.get(b.id)?.values() || []).filter(s => s === ShiftConst.Afternoon).length;
-          if (aT !== bT) return aT - bT;
-          return a.name.localeCompare(b.name);
-        });
-
-        if (ayudanteCandidates.length > 0) {
-          const chosenAyudante = ayudanteCandidates[0];
-          setShift(chosenAyudante.id, day, ShiftConst.Afternoon);
-          countT++;
-          countAyudanteT++;
-          neededT--;
-        }
-      }
-
-      // 2. Asignar 1 Recepcionista (o 2º Jefe) a Tarde si aún no hay ninguno
-      if (countRecepT < 1 && neededT > 0) {
-        const recepCandidates = employees.filter(e => (e.role === 'Recepcionista' || e.role === '2º Jefe') && canDoT(e));
-        recepCandidates.sort((a, b) => {
-          const aPrevT = workedYesterdayT(a.id) ? 1 : 0;
-          const bPrevT = workedYesterdayT(b.id) ? 1 : 0;
-          if (aPrevT !== bPrevT) return bPrevT - aPrevT;
-          const aT = Array.from(schedule.get(a.id)?.values() || []).filter(s => s === ShiftConst.Afternoon).length;
-          const bT = Array.from(schedule.get(b.id)?.values() || []).filter(s => s === ShiftConst.Afternoon).length;
-          if (aT !== bT) return aT - bT;
-          const aVal = (parseInt(a.id.replace(/\D/g, '') || '0', 10) + weekNumber + dayIndex) % 7;
-          const bVal = (parseInt(b.id.replace(/\D/g, '') || '0', 10) + weekNumber + dayIndex) % 7;
-          return aVal - bVal;
-        });
-
-        if (recepCandidates.length > 0) {
-          const chosenRecep = recepCandidates[0];
-          setShift(chosenRecep.id, day, ShiftConst.Afternoon);
-          countT++;
-          countRecepT++;
-          neededT--;
-        }
-      }
-
-      // 3. Si aún queda un hueco en Tarde (por ejemplo, si ambos Ayudantes tenían libre/vacaciones):
-      // NUNCA asignamos un segundo Ayudante ("no puede haber 2 ayudantes juntos").
-      // Se asigna otro Recepcionista / Subjefe disponible:
-      while (neededT > 0) {
-        const extraRecepCandidates = employees.filter(e => (e.role === 'Recepcionista' || e.role === '2º Jefe') && canDoT(e));
-        if (extraRecepCandidates.length === 0) break;
-        extraRecepCandidates.sort((a, b) => {
-          const aPrevT = workedYesterdayT(a.id) ? 1 : 0;
-          const bPrevT = workedYesterdayT(b.id) ? 1 : 0;
-          if (aPrevT !== bPrevT) return bPrevT - aPrevT;
-          const aT = Array.from(schedule.get(a.id)?.values() || []).filter(s => s === ShiftConst.Afternoon).length;
-          const bT = Array.from(schedule.get(b.id)?.values() || []).filter(s => s === ShiftConst.Afternoon).length;
-          return aT - bT;
-        });
-        const extraChosen = extraRecepCandidates[0];
-        setShift(extraChosen.id, day, ShiftConst.Afternoon);
-        countT++;
-        countRecepT++;
-        neededT--;
-      }
+      f[5] = null; f[6] = null;
     }
-
-    // 11.B ENFORCEMENT: "SI TRABAJA DE TARDE NO TRABAJE DE MAÑANA"
-    // Cualquier empleado que trabajó de Tarde ayer y que aún no tenga turno hoy,
-    // TIENE TERMINANTEMENTE PROHIBIDO TRABAJAR DE MAÑANA (M) HOY.
-    // Como las Tardes de hoy ya están cubiertas, debe asignársele Libre (L) de descanso:
-    employees.forEach(emp => {
-      if (!hasShift(emp.id, day) && workedYesterdayT(emp.id)) {
-        setShift(emp.id, day, ShiftConst.Off);
-      }
-    });
-
-    // 11.C ASIGNACIÓN DE TURNOS DE MAÑANA (M) HASTA EL MÁXIMO PERMITIDO (3 L-J, 4 V-D)
-    const neededM = Math.max(0, maxM - countM);
-    const morningCandidates = employees.filter(emp => !hasShift(emp.id, day));
-
-    // Priorizar al Jefe Xisco y 2º Jefe Aliz de Mañana si están disponibles
-    morningCandidates.sort((a, b) => {
-      if (a.id === 'jefe') return -1;
-      if (b.id === 'jefe') return 1;
-      if (a.id === 'subjefe') return -1;
-      if (b.id === 'subjefe') return 1;
-      const aOffs = Array.from(schedule.get(a.id)?.values() || []).filter(
-        s => [ShiftConst.Off, ShiftConst.Vacation, ShiftConst.Paternity, ShiftConst.Festive].includes(s as any)
-      ).length;
-      const bOffs = Array.from(schedule.get(b.id)?.values() || []).filter(
-        s => [ShiftConst.Off, ShiftConst.Vacation, ShiftConst.Paternity, ShiftConst.Festive].includes(s as any)
-      ).length;
-      if (aOffs !== bOffs) return aOffs - bOffs;
-      return (parseInt(a.id.replace(/\D/g, '') || '0', 10) + weekNumber) - (parseInt(b.id.replace(/\D/g, '') || '0', 10) + weekNumber);
-    });
-
-    let assignedM = 0;
-    for (const emp of morningCandidates) {
-      if (assignedM < neededM) {
-        setShift(emp.id, day, ShiftConst.Morning);
-        assignedM++;
-      } else {
-        // Excedente no puede superar el cupo máximo exigido por el usuario
-        setShift(emp.id, day, ShiftConst.Off);
-      }
-    }
-  });
-
-  // 12. APLICAR OVERRIDES MANUALES (si el usuario ha hecho ajustes personalizados)
-  if (overrides) {
-    Object.entries(overrides).forEach(([key, overrideShift]) => {
-      // key: `${employeeId}-${day}`
-      const [empId, dayStr] = key.split('-');
-      if (empId && dayStr && schedule.has(empId)) {
-        setShift(empId, dayStr as DayOfWeek, overrideShift);
-      }
-    });
   }
 
-  // 13. GENERAR RESULTADO FINAL DE FILAS
-  return employees.map(emp => ({
-    employeeId: emp.id,
-    employeeName: emp.name,
-    role: emp.role,
-    shifts: DAYS_OF_WEEK.map(day => ({
-      day,
-      shift: getShift(emp.id, day) || ShiftConst.Off
-    }))
-  }));
+  // 6. Patrones + búsqueda
+  const ctxs = employees.map(emp => buildCtx(emp, emp.id === weekendOffId));
+  const pats = ctxs.map(c => patternsWithRelax(c, params));
+  ctxs.forEach(c => {
+    if (c.relaxNotes.length) notes.push({ level: 'warning', rule: 'Normas personales', message: `${c.emp.name}: no se pudo cumplir «${c.relaxNotes.join(', ')}» por sus turnos fijos, peticiones o cambios manuales.` });
+  });
+  const { choice, exact } = solve(ctxs, pats, buildLimits(config));
+
+  // 7. Resultado
+  const rows: ScheduleRow[] = ctxs.map((c, i) => {
+    const pt = pats[i][choice[i]];
+    return {
+      employeeId: c.emp.id,
+      employeeName: c.emp.name,
+      role: c.roleName,
+      shifts: DAYS_OF_WEEK.map((day, d) => ({
+        day,
+        shift: c.fixedStr[d] !== null ? c.fixedStr[d]! : (CODE_TO_STR[pt ? pt.cells[d] : C_L] ?? 'L'),
+      })),
+    };
+  });
+
+  if (!exact) notes.unshift({ level: 'error', rule: 'Generación', message: 'No hay forma de cumplir todas las normas a la vez con el personal disponible esta semana. Se ha generado el cuadrante con el menor número posible de incumplimientos (detalle abajo).' });
+  uncoveredNights.forEach(d => notes.push({ level: 'error', rule: 'Noches rotativas', message: `${d}: no hay nadie disponible en la rotación de noches.` }));
+  if (rules.weekendRotation && !weekendOffId && weekendQueue.length) {
+    notes.push({ level: 'warning', rule: 'Fin de semana libre', message: 'Esta semana nadie de la rotación ha podido librar sábado y domingo (bajas, vacaciones o turnos fijos).' });
+  }
+
+  const issues = [...notes, ...validateSchedule(config, rows, ctxs.map(c => ({
+    id: c.emp.id, kind: c.kind, targetWork: c.targetWork, postNight: c.postNight, prev: state.prevWeek[c.emp.id] || [],
+  })), params)];
+
+  // 8. Estado para la semana siguiente
+  const hist = { ...state.hist };
+  const prevWeek: Record<string, Shift[]> = {};
+  rows.forEach(r => {
+    const h = { ...(hist[r.employeeId] || emptyHist()) };
+    r.shifts.forEach(s => {
+      if (isWorkCode(strToCode(s.shift))) h.work++;
+      if (s.shift === 'T') h.T++;
+      if (s.shift === 'S') h.S++;
+      if (s.shift === 'N') h.nights++;
+    });
+    if (r.employeeId === weekendOffId) h.weekends++;
+    hist[r.employeeId] = h;
+    prevWeek[r.employeeId] = r.shifts.map(s => s.shift);
+  });
+
+  return {
+    result: { weekStart, rows, issues, weekendOffEmployeeId: weekendOffId, nightRotationEmployeeIds: nightRotationIds },
+    next: { weekendQueue, nightQueue, nightBlock: nextBlock, prevWeek, hist },
+  };
+}
+
+// ───────────────────────── validación independiente ─────────────────────────
+
+interface ValidationEmp { id: string; kind: RoleKind; targetWork: number; postNight: 'Afternoon' | 'Off' | null; prev: Shift[] }
+
+function validateSchedule(config: AppConfig, rows: ScheduleRow[], emps: ValidationEmp[], p: SolveParams): ScheduleIssue[] {
+  const issues: ScheduleIssue[] = [];
+  const rules = config.rules;
+  const kindOf = (id: string) => emps.find(e => e.id === id)?.kind || 'otro';
+  const hoursOfStr = (s: string) => (strToCode(s) === C_CUSTOM ? parseCustomHours(s) : p.hoursByCode[strToCode(s)]);
+
+  DAYS_OF_WEEK.forEach((day, d) => {
+    const c = config.coverage[day];
+    const at = (code: string) => rows.filter(r => r.shifts[d].shift === code);
+    const m = at('M').length, t = at('T').length, s = at('S').length, n = at('N').length;
+    if (m < c.M.min) issues.push({ level: 'error', rule: 'Cobertura', message: `${day}: faltan ${c.M.min - m} de mañana (${m}/${c.M.min}).` });
+    if (m > c.M.max) issues.push({ level: 'warning', rule: 'Cobertura', message: `${day}: sobran ${m - c.M.max} de mañana (${m}, máx. ${c.M.max}).` });
+    if (t < c.T.min) issues.push({ level: 'error', rule: 'Cobertura', message: `${day}: faltan ${c.T.min - t} de tarde (${t}/${c.T.min}).` });
+    if (t > c.T.max) issues.push({ level: 'warning', rule: 'Cobertura', message: `${day}: sobran ${t - c.T.max} de tarde (${t}, máx. ${c.T.max}).` });
+    if (c.S.enabled && s < c.S.min) issues.push({ level: 'error', rule: 'Turno especial', message: `${day}: falta el turno especial (${s}/${c.S.min}).` });
+    if (n < c.N) issues.push({ level: 'error', rule: 'Noche', message: `${day}: noche sin cubrir (${n}/${c.N}).` });
+    const tRows = at('T');
+    const helpers = tRows.filter(r => kindOf(r.employeeId) === 'ayudante').length;
+    const receps = tRows.filter(r => kindOf(r.employeeId) === 'recepcion').length;
+    if (rules.noTwoHelpersAfternoon && helpers > 1) issues.push({ level: 'error', rule: 'Ayudantes', message: `${day}: hay ${helpers} ayudantes juntos de tarde.` });
+    if (rules.receptionistRequiredAfternoon && t > 0 && receps === 0) issues.push({ level: 'error', rule: 'Recepcionista de tarde', message: `${day}: la tarde no tiene ningún recepcionista.` });
+  });
+
+  rows.forEach(r => {
+    const e = emps.find(x => x.id === r.employeeId);
+    if (!e) return;
+    const shifts = r.shifts.map(s => s.shift);
+    const work = shifts.filter(s => isWorkCode(strToCode(s))).length;
+    if (rules.weeklyDays.enabled && work !== e.targetWork) {
+      issues.push({ level: 'error', rule: 'Días trabajados', message: `${r.employeeName}: trabaja ${work} días (le tocan ${e.targetWork}).` });
+    }
+    const all: (string | null)[] = [...(e.prev.length ? e.prev.slice(-2) : [null, null]), ...shifts];
+    for (let i = 2; i < all.length; i++) {
+      const a = all[i - 1], b = all[i]!;
+      const day = DAYS_OF_WEEK[i - 2];
+      if (rules.minRest.enabled && a && isWorkCode(strToCode(a)) && isWorkCode(strToCode(b))) {
+        const ha = hoursOfStr(a), hb = hoursOfStr(b);
+        const exempt = e.postNight === 'Afternoon' && a === 'N' && b === 'T';
+        if (ha && hb && !exempt && 24 + hb.s - ha.e < rules.minRest.hours) {
+          issues.push({ level: 'warning', rule: 'Descanso', message: `${r.employeeName}: el ${day} entra con menos de ${rules.minRest.hours} h de descanso.` });
+        }
+      }
+      if (e.postNight && a === 'N' && b !== 'N') {
+        if (e.postNight === 'Afternoon' && b !== 'T' && !isOffLike(strToCode(b))) {
+          issues.push({ level: 'warning', rule: 'Salida de noche', message: `${r.employeeName}: el ${day} debería entrar de tarde al salir de noche.` });
+        }
+        if (e.postNight === 'Off' && !isOffLike(strToCode(b))) {
+          issues.push({ level: 'warning', rule: 'Salida de noche', message: `${r.employeeName}: el ${day} debería librar al salir de noche.` });
+        }
+      }
+    }
+  });
+  return issues;
+}
+
+// ───────────────────────── API con caché ─────────────────────────
+
+const stepCache = new Map<string, { result: WeekResult; next: ChainState }>();
+
+const weekInputsKey = (config: AppConfig, weekStart: string) => {
+  const end = addDaysISO(weekStart, 6);
+  const reqs = (config.requests || []).filter(r => r.startDate <= end && r.endDate >= weekStart)
+    .map(r => `${r.id}:${r.employeeId}:${r.type}:${r.startDate}:${r.endDate}:${r.status || ''}`);
+  return JSON.stringify([config.overridesByWeek?.[weekStart] || {}, reqs]);
+};
+
+const coreKey = (config: AppConfig) => JSON.stringify({
+  e: config.employees, r: config.roles, s: config.shifts, c: config.coverage, ru: config.rules, a: config.rotationStartDate,
+});
+
+/** Cuadrante de la semana que empieza en weekStart (lunes, yyyy-mm-dd). */
+export function getWeekSchedule(config: AppConfig, weekStartInput: string | Date): WeekResult {
+  const weekStart = mondayOfISO(typeof weekStartInput === 'string' ? weekStartInput : toISODate(weekStartInput));
+  if (!config.isConfigured) return { weekStart, rows: [], issues: [], weekendOffEmployeeId: null, nightRotationEmployeeIds: [] };
+  if (stepCache.size > 3000) stepCache.clear();
+
+  const anchor = mondayOfISO(config.rotationStartDate || weekStart);
+  const core = coreKey(config);
+  let start = weekStart < anchor ? weekStart : anchor;
+  if (weeksBetween(start, weekStart) > 520) start = addDaysISO(weekStart, -7 * 520);
+
+  let state = initialState();
+  let w = start;
+  let last: WeekResult | null = null;
+  while (w <= weekStart) {
+    const key = `${core}|${w}|${weekInputsKey(config, w)}|${JSON.stringify(state)}`;
+    let step = stepCache.get(key);
+    if (!step) { step = solveWeek(config, w, state); stepCache.set(key, step); }
+    last = step.result;
+    state = step.next;
+    w = addDaysISO(w, 7);
+  }
+  return last!;
+}
+
+/** Versión para empleados: sólo nombres y turnos, nunca roles. */
+export function getPublicWeekSchedule(config: AppConfig, weekStart: string) {
+  const res = getWeekSchedule(config, weekStart);
+  return {
+    weekStart: res.weekStart,
+    rows: res.rows.map(r => ({ employeeId: r.employeeId, employeeName: r.employeeName, shifts: r.shifts })),
+  };
 }

@@ -8,22 +8,14 @@ interface ConfigDialogProps {
   onSave: (config: AppConfig) => void;
 }
 
-const ConfigDialog: React.FC<ConfigDialogProps> = ({ config, onSave }) => {
-  return (
-    <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto bg-white border-zinc-200 text-zinc-950">
-      <DialogHeader className="p-2 border-b border-zinc-100 pb-4 mb-4">
-        <DialogTitle className="text-3xl font-black italic uppercase tracking-tighter text-zinc-900">
-          Panel de Configuración
-        </DialogTitle>
-        <DialogDescription className="text-sm text-zinc-500 font-medium">
-          Configuración general de empleados, turnos y personal de recepción.
-        </DialogDescription>
-      </DialogHeader>
-      <div className="p-2">
-        <SetupForm initialConfig={config} onSave={onSave} />
-      </div>
-    </DialogContent>
-  );
-};
+const ConfigDialog: React.FC<ConfigDialogProps> = ({ config, onSave }) => (
+  <DialogContent className="max-w-4xl max-h-[92vh] overflow-y-auto bg-zinc-50 border-zinc-200 text-zinc-950">
+    <DialogHeader className="border-b border-zinc-200 pb-3 mb-2">
+      <DialogTitle className="text-2xl font-black text-zinc-900">Ajustes</DialogTitle>
+      <DialogDescription className="text-sm text-zinc-500">Equipo, normas, personal por día, horarios, roles y seguridad.</DialogDescription>
+    </DialogHeader>
+    <SetupForm initialConfig={config} onSave={onSave} />
+  </DialogContent>
+);
 
 export default ConfigDialog;

@@ -1,20 +1,30 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# Turnos de recepción
 
-# Run and deploy your AI Studio app
+Generador automático de cuadrantes semanales con normas activables.
 
-This contains everything you need to run your app locally.
+## Arrancar
 
-View your app in AI Studio: https://ai.studio/apps/142362b3-2fb7-4045-b416-39be4067dadd
+1. `npm install`
+2. `npm run dev` y abre http://localhost:3000
 
-## Run Locally
+- **Panel del administrador:** dirección principal. Sin contraseña por ahora. Cuando quieras, pon un PIN en Ajustes → Seguridad para que los empleados no puedan entrar al panel.
+- **Empleados:** `http://TU-DIRECCION/?portal=empleado`. Ven su cuadrante y piden días. Nunca ven roles ni ajustes.
 
-**Prerequisites:**  Node.js
+## Cómo funciona
 
+- El conserje de noche trabaja sus 5 noches. Sus días libres los cubre cada semana una recepcionista distinta de la rotación de noches.
+- Al salir de noche, cada empleado tiene su opción: tarde al día siguiente o 2 días libres.
+- Cada semana libra sábado y domingo una persona distinta.
+- Todos trabajan 5 días y libran 2 seguidos.
+- Por la tarde nunca hay dos ayudantes juntos y siempre hay un recepcionista.
+- Personal por día, horarios, roles, empleados y cada norma se cambian en **Ajustes**.
+- El turno especial (10:00–18:00 por defecto) se activa en Ajustes → Personal por día.
+- Si cambias una casilla a mano, el resto del cuadrante se reorganiza solo.
+- Encima del cuadrante aparece si cumple todas las normas o qué falla exactamente.
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## Archivos principales
+
+- `scheduleService.ts`: motor de generación y validación.
+- `components/SetupForm.tsx`: ajustes.
+- `components/EmployeePortal.tsx`: portal del empleado.
+- `server.ts`: guarda los datos en `data/` y protege la configuración con el PIN.

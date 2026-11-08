@@ -26,7 +26,7 @@ export default function SharePortalDialog({ isOpen, onClose, onOpenPreview }: Sh
     }
   };
 
-  const whatsappMessage = `Hola equipo, aquí tenéis el enlace directo para solicitar vuestras vacaciones y días libres:\n\n${portalUrl}\n\nPodéis rellenar las fechas directamente desde vuestro móvil.`;
+  const whatsappMessage = `Hola equipo, aquí tenéis el enlace para ver vuestros turnos y solicitar vacaciones y días libres:\n\n${portalUrl}\n\nPodéis rellenar las fechas directamente desde vuestro móvil.`;
   const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(whatsappMessage)}`;
 
   return (
@@ -48,10 +48,10 @@ export default function SharePortalDialog({ isOpen, onClose, onOpenPreview }: Sh
           </div>
           <div>
             <h3 className="text-xl font-black text-zinc-900 tracking-tight">
-              Enlace de Peticiones para el Personal
+              Enlace para el personal
             </h3>
             <p className="text-xs text-zinc-500 font-medium">
-              Envía este enlace a tus empleados para que pidan sus vacaciones desde su móvil
+              Con este enlace cada empleado ve el cuadrante y pide vacaciones desde el móvil. Nunca ve roles ni ajustes.
             </p>
           </div>
         </div>
@@ -114,8 +114,8 @@ export default function SharePortalDialog({ isOpen, onClose, onOpenPreview }: Sh
           </div>
           <p className="text-[11px] leading-relaxed text-teal-900/80">
             1. El empleado abre el enlace desde su teléfono sin necesidad de contraseñas.<br/>
-            2. Selecciona su nombre, las fechas de vacaciones o libre y el motivo.<br/>
-            3. Al enviarlo, la solicitud se registra y se aplica automáticamente en el cuadrante.
+            2. Selecciona su nombre y ve sus turnos de cada semana.<br/>
+            3. Puede pedir vacaciones o días libres; se aplican solas al cuadrante.
           </p>
         </div>
 

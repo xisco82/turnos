@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { AppConfig, ScheduleRequest, RequestType } from '../types';
-import { Calendar, Clock, Send, CheckCircle2, User, FileText, ArrowLeft, MessageSquare, AlertTriangle, ShieldCheck } from 'lucide-react';
-import { Button } from './ui/button';
+import { AppConfig, ScheduleRequest, RequestType, DayOfWeek } from '../types';
+import { Calendar, Send, CheckCircle2, User, ArrowLeft, MessageSquare, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react';
+import { DAYS_OF_WEEK, displayShift, getMondayISO, shiftLegend, shiftStyle } from '../constants';
+import { addDaysISO, getPublicWeekSchedule } from '../scheduleService';
 
 interface EmployeePortalProps {
   config: AppConfig;
@@ -9,464 +10,219 @@ interface EmployeePortalProps {
   onRequestSubmitted?: (req: ScheduleRequest) => void;
 }
 
+interface PublicRow { employeeId: string; employeeName: string; shifts: { day: DayOfWeek; shift: string; label: string }[] }
+
+const EMP_KEY = 'turnos_portal_employee';
+
 export default function EmployeePortal({ config, onBackToAdmin, onRequestSubmitted }: EmployeePortalProps) {
-  const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>('');
+  const [tab, setTab] = useState<'turnos' | 'pedir'>('turnos');
+  const [employees, setEmployees] = useState<{ id: string; name: string }[]>(
+    () => config.employees.filter(e => e.active && e.name.trim()).map(e => ({ id: e.id, name: e.name })));
+  const [managerName, setManagerName] = useState(config.managerName || 'el responsable');
+  const [selectedId, setSelectedId] = useState<string>(() => { try { return localStorage.getItem(EMP_KEY) || ''; } catch { return ''; } });
+  const [week, setWeek] = useState(getMondayISO());
+  const [rows, setRows] = useState<PublicRow[]>([]);
+  const [legend, setLegend] = useState(shiftLegend(config));
+  const [loading, setLoading] = useState(false);
+
+  // formulario
   const [requestType, setRequestType] = useState<RequestType>('Vacaciones');
-  const [startDate, setStartDate] = useState<string>('');
-  const [endDate, setEndDate] = useState<string>('');
-  const [reason, setReason] = useState<string>('');
-  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
-  const [submittedRequest, setSubmittedRequest] = useState<ScheduleRequest | null>(null);
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [reason, setReason] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState<ScheduleRequest | null>(null);
   const [allRequests, setAllRequests] = useState<ScheduleRequest[]>(config.requests || []);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // List of active employees
-  const cleanAyudantes = (config.ayudantes || []).filter(name => name.trim().toUpperCase() !== 'LORENA');
-  const employees = useMemo(() => [
-    { id: 'jefe', name: config.jefe, role: 'Jefe' },
-    { id: 'subjefe', name: config.subjefe, role: '2º Jefe' },
-    { id: 'conserje', name: config.conserje, role: 'Conserje' },
-    ...config.recepcionistas.map((name, i) => ({ id: `rec-${i}`, name, role: 'Recepcionista' })),
-    ...cleanAyudantes.map((name, i) => ({ id: `ayu-${i}`, name, role: 'Ayudante' })),
-    ...config.extraEmployees.map(e => ({ id: e.id, name: e.name, role: e.role }))
-  ].filter(e => e.name.trim() !== ''), [config]);
+  useEffect(() => { try { if (selectedId) localStorage.setItem(EMP_KEY, selectedId); } catch { /* */ } }, [selectedId]);
 
-  // Load existing requests from server on mount
   useEffect(() => {
-    fetch('/api/requests')
-      .then(res => res.ok ? res.json() : [])
-      .then(data => {
-        if (Array.isArray(data) && data.length > 0) {
-          setAllRequests(data);
-        }
-      })
-      .catch(() => {
-        // Fallback to config.requests
-        setAllRequests(config.requests || []);
-      });
-  }, [config.requests]);
+    fetch('/api/public/employees').then(r => (r.ok ? r.json() : null)).then(d => {
+      if (d?.employees?.length) { setEmployees(d.employees); setManagerName(d.managerName || managerName); }
+    }).catch(() => {});
+    fetch('/api/requests').then(r => (r.ok ? r.json() : null)).then(d => { if (Array.isArray(d)) setAllRequests(d); }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const selectedEmployee = employees.find(e => e.id === selectedEmployeeId);
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    const local = () => {
+      const data = getPublicWeekSchedule(config, week);
+      return data.rows.map(r => ({ ...r, shifts: r.shifts.map(s => ({ ...s, label: displayShift(s.shift, config) })) }));
+    };
+    fetch(`/api/public/schedule?week=${week}`)
+      .then(r => (r.ok ? r.json() : Promise.reject()))
+      .then(d => { if (!cancelled) { setRows(d.rows); if (d.legend) setLegend(d.legend); } })
+      .catch(() => { if (!cancelled) setRows(local()); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [week, config]);
 
-  // Calculate days between dates
+  const selected = employees.find(e => e.id === selectedId);
+  const myRow = rows.find(r => r.employeeId === selectedId);
   const totalDays = useMemo(() => {
     if (!startDate || !endDate) return 0;
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-    if (isNaN(start.getTime()) || isNaN(end.getTime())) return 0;
-    const diffTime = end.getTime() - start.getTime();
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
-    return diffDays > 0 ? diffDays : 0;
+    const diff = Math.round((new Date(endDate).getTime() - new Date(startDate).getTime()) / 86400000) + 1;
+    return diff > 0 ? diff : 0;
   }, [startDate, endDate]);
+  const myRequests = allRequests.filter(r => r.employeeId === selectedId).sort((a, b) => b.startDate.localeCompare(a.startDate));
 
-  // Employee's own requests
-  const employeeRequests = useMemo(() => {
-    if (!selectedEmployeeId) return [];
-    return allRequests
-      .filter(r => r.employeeId === selectedEmployeeId)
-      .sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
-  }, [allRequests, selectedEmployeeId]);
+  const weekLabel = (() => {
+    const fmt = (iso: string) => new Date(iso + 'T12:00:00').toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
+    return `${fmt(week)} – ${fmt(addDaysISO(week, 6))}`;
+  })();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
-
-    if (!selectedEmployeeId) {
-      setErrorMessage('Por favor, selecciona tu nombre de la lista.');
-      return;
-    }
-    if (!startDate) {
-      setErrorMessage('Por favor, selecciona la fecha de inicio.');
-      return;
-    }
-    if (!endDate) {
-      setErrorMessage('Por favor, selecciona la fecha de fin.');
-      return;
-    }
-    if (new Date(startDate) > new Date(endDate)) {
-      setErrorMessage('La fecha de fin debe ser posterior o igual a la fecha de inicio.');
-      return;
-    }
-
+    if (!selectedId) return setErrorMessage('Selecciona tu nombre arriba.');
+    if (!startDate || !endDate) return setErrorMessage('Elige la fecha de inicio y la de fin.');
+    if (startDate > endDate) return setErrorMessage('La fecha de fin no puede ser anterior a la de inicio.');
     setIsSubmitting(true);
-
-    const newReq: ScheduleRequest = {
-      id: Date.now().toString(),
-      employeeId: selectedEmployeeId,
-      type: requestType,
-      startDate,
-      endDate,
-      reason: reason.trim(),
-      status: 'pending',
-      createdAt: new Date().toISOString()
-    };
-
+    const newReq: ScheduleRequest = { id: Date.now().toString(), employeeId: selectedId, type: requestType, startDate, endDate, reason: reason.trim(), status: 'pending', createdAt: new Date().toISOString() };
+    let saved = newReq;
     try {
-      // Send to server API
-      const res = await fetch('/api/requests', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newReq)
-      });
-
-      if (res.ok) {
-        const saved = await res.json();
-        setSubmittedRequest(saved);
-        setAllRequests(prev => [...prev, saved]);
-        if (onRequestSubmitted) {
-          onRequestSubmitted(saved);
-        }
-      } else {
-        // Fallback local
-        setSubmittedRequest(newReq);
-        setAllRequests(prev => [...prev, newReq]);
-        if (onRequestSubmitted) {
-          onRequestSubmitted(newReq);
-        }
-      }
-    } catch (err) {
-      // Fallback local if server offline
-      setSubmittedRequest(newReq);
-      setAllRequests(prev => [...prev, newReq]);
-      if (onRequestSubmitted) {
-        onRequestSubmitted(newReq);
-      }
-    } finally {
-      setIsSubmitting(false);
-    }
+      const res = await fetch('/api/requests', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newReq) });
+      if (res.ok) saved = await res.json();
+    } catch { /* sin servidor: queda en local */ }
+    setSubmitted(saved);
+    setAllRequests(prev => [...prev, saved]);
+    onRequestSubmitted?.(saved);
+    setIsSubmitting(false);
   };
 
-  const handleResetForm = () => {
-    setSubmittedRequest(null);
-    setStartDate('');
-    setEndDate('');
-    setReason('');
-    setErrorMessage(null);
-  };
-
-  // WhatsApp sharing URL
-  const getWhatsAppUrl = (req: ScheduleRequest) => {
-    const empName = selectedEmployee ? selectedEmployee.name : 'Un empleado';
-    const text = `Hola Xisco, soy ${empName}. He solicitado ${req.type.toUpperCase()} desde el ${req.startDate} hasta el ${req.endDate} (${totalDays} días)${req.reason ? ` - Motivo: ${req.reason}` : ''}. ¿Me confirmas cuando puedas? ¡Gracias!`;
+  const whatsapp = (req: ScheduleRequest) => {
+    const text = `Hola ${managerName}, soy ${selected?.name || 'un empleado'}. He solicitado ${req.type.toUpperCase()} del ${req.startDate} al ${req.endDate} (${totalDays} días)${req.reason ? `. Motivo: ${req.reason}` : ''}. ¿Me lo confirmas? ¡Gracias!`;
     return `https://wa.me/?text=${encodeURIComponent(text)}`;
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-zinc-100 to-zinc-200 py-6 px-4 sm:px-6 font-sans text-zinc-800">
-      <div className="max-w-xl mx-auto">
-        
-        {/* TOP BAR */}
-        <div className="flex items-center justify-between mb-6">
+    <div className="min-h-screen bg-zinc-100 py-6 px-4 font-sans text-zinc-800">
+      <div className="max-w-3xl mx-auto">
+        <div className="flex items-center justify-between mb-5">
           <div className="flex items-center gap-2">
             <span className="text-2xl">🏨</span>
-            <div>
-              <h1 className="text-lg font-black tracking-tight text-zinc-900 leading-none">TURNOS XISCO</h1>
-              <p className="text-[11px] font-bold text-teal-700 uppercase tracking-wider">Portal de Peticiones y Vacaciones</p>
-            </div>
+            <h1 className="text-lg font-black text-zinc-900">Mis turnos</h1>
           </div>
-
           {onBackToAdmin && (
-            <button
-              onClick={onBackToAdmin}
-              type="button"
-              className="flex items-center gap-1 text-xs font-bold text-zinc-600 bg-white hover:bg-zinc-50 border border-zinc-300 px-3 py-1.5 rounded-lg shadow-sm transition"
-            >
-              <ArrowLeft className="w-3.5 h-3.5" />
-              <span>Ver Cuadrante</span>
+            <button onClick={onBackToAdmin} type="button" className="flex items-center gap-1 text-xs font-bold text-zinc-600 bg-white border border-zinc-300 px-3 py-1.5 rounded-lg">
+              <ArrowLeft className="w-3.5 h-3.5" /> Volver al panel
             </button>
           )}
         </div>
 
-        {/* SUBMITTED SUCCESS CARD */}
-        {submittedRequest ? (
-          <div className="bg-white rounded-2xl shadow-xl border border-emerald-100 p-6 text-center animate-in fade-in zoom-in-95 duration-200">
-            <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto mb-4">
-              <CheckCircle2 className="w-10 h-10" />
-            </div>
+        <label className="block bg-white rounded-2xl border border-zinc-200 p-4 mb-4">
+          <span className="text-xs font-black text-zinc-700 flex items-center gap-1.5 mb-2"><User className="w-3.5 h-3.5 text-teal-600" /> ¿Quién eres?</span>
+          <select value={selectedId} onChange={e => setSelectedId(e.target.value)} className="w-full px-3 py-2.5 bg-zinc-50 border-2 border-zinc-200 rounded-xl text-sm font-bold">
+            <option value="">Selecciona tu nombre…</option>
+            {employees.map(emp => <option key={emp.id} value={emp.id}>{emp.name}</option>)}
+          </select>
+        </label>
 
-            <h2 className="text-xl font-black text-zinc-900 mb-1">¡Solicitud Registrada con Éxito!</h2>
-            <p className="text-sm text-zinc-600 mb-6">
-              Tu solicitud ha quedado guardada en el sistema para que <span className="font-bold text-zinc-900">Xisco</span> la revise en el cuadrante.
-            </p>
-
-            {/* REQUEST DETAILS */}
-            <div className="bg-zinc-50 rounded-xl p-4 text-left border border-zinc-200 mb-6 space-y-2 text-sm">
-              <div className="flex justify-between items-center border-b border-zinc-200 pb-2">
-                <span className="text-zinc-500 font-medium">Empleado:</span>
-                <span className="font-black text-zinc-900">{selectedEmployee?.name}</span>
-              </div>
-              <div className="flex justify-between items-center border-b border-zinc-200 pb-2">
-                <span className="text-zinc-500 font-medium">Tipo:</span>
-                <span className="font-black text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
-                  {submittedRequest.type}
-                </span>
-              </div>
-              <div className="flex justify-between items-center border-b border-zinc-200 pb-2">
-                <span className="text-zinc-500 font-medium">Fechas:</span>
-                <span className="font-black text-zinc-900">{submittedRequest.startDate} al {submittedRequest.endDate}</span>
-              </div>
-              <div className="flex justify-between items-center border-b border-zinc-200 pb-2">
-                <span className="text-zinc-500 font-medium">Duración:</span>
-                <span className="font-bold text-teal-700">{totalDays} {totalDays === 1 ? 'día' : 'días'}</span>
-              </div>
-              {submittedRequest.reason && (
-                <div className="flex justify-between items-start pt-1">
-                  <span className="text-zinc-500 font-medium">Motivo:</span>
-                  <span className="font-medium text-zinc-700 text-right max-w-[240px]">{submittedRequest.reason}</span>
-                </div>
-              )}
-            </div>
-
-            {/* WHATSAPP NOTIFICATION BUTTON */}
-            <div className="space-y-3">
-              <a
-                href={getWhatsAppUrl(submittedRequest)}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-black py-3 px-4 rounded-xl shadow-md transition"
-              >
-                <MessageSquare className="w-5 h-5" />
-                <span>Enviar aviso por WhatsApp a Xisco</span>
-              </a>
-
-              <Button
-                type="button"
-                variant="outline"
-                onClick={handleResetForm}
-                className="w-full py-2.5 rounded-xl text-zinc-700 border-zinc-300 font-bold"
-              >
-                Hacer otra solicitud
-              </Button>
-            </div>
-          </div>
-        ) : (
-          /* REQUEST FORM */
-          <div className="bg-white rounded-2xl shadow-xl border border-zinc-200 overflow-hidden">
-            <div className="bg-zinc-900 text-white p-5">
-              <h2 className="text-lg font-black tracking-tight flex items-center gap-2">
-                <Calendar className="w-5 h-5 text-teal-400" />
-                <span>Solicitud de Vacaciones y Peticiones</span>
-              </h2>
-              <p className="text-xs text-zinc-400 mt-1">
-                Completa el formulario para solicitar días de vacaciones, libranza o peticiones de turnos.
-              </p>
-            </div>
-
-            <form onSubmit={handleSubmit} className="p-6 space-y-5">
-              
-              {errorMessage && (
-                <div className="flex items-center gap-2 bg-red-50 text-red-700 text-xs font-bold p-3 rounded-xl border border-red-200">
-                  <AlertTriangle className="w-4 h-4 shrink-0" />
-                  <span>{errorMessage}</span>
-                </div>
-              )}
-
-              {/* 1. SELECT EMPLOYEE */}
-              <div>
-                <label className="block text-xs font-black uppercase tracking-wider text-zinc-700 mb-2 flex items-center gap-1.5">
-                  <User className="w-3.5 h-3.5 text-teal-600" />
-                  <span>1. ¿Quién eres? (Tu nombre) *</span>
-                </label>
-                <select
-                  value={selectedEmployeeId}
-                  onChange={(e) => setSelectedEmployeeId(e.target.value)}
-                  className="w-full px-3.5 py-2.5 bg-zinc-50 border-2 border-zinc-200 rounded-xl text-sm font-bold text-zinc-900 focus:outline-none focus:border-teal-600 transition"
-                  required
-                >
-                  <option value="">Selecciona tu nombre...</option>
-                  {employees.map(emp => (
-                    <option key={emp.id} value={emp.id}>
-                      {emp.name} — {emp.role}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* 2. SELECT REQUEST TYPE */}
-              <div>
-                <label className="block text-xs font-black uppercase tracking-wider text-zinc-700 mb-2 flex items-center gap-1.5">
-                  <FileText className="w-3.5 h-3.5 text-teal-600" />
-                  <span>2. Tipo de solicitud *</span>
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setRequestType('Vacaciones')}
-                    className={`p-3 rounded-xl border-2 text-left transition flex items-center gap-2.5 ${
-                      requestType === 'Vacaciones'
-                        ? 'border-amber-500 bg-amber-50 text-amber-900 font-black ring-2 ring-amber-400/20'
-                        : 'border-zinc-200 bg-white text-zinc-700 font-semibold hover:bg-zinc-50'
-                    }`}
-                  >
-                    <span className="text-xl">🏖️</span>
-                    <div>
-                      <div className="text-xs font-black">Vacaciones</div>
-                      <div className="text-[10px] text-zinc-500 font-normal leading-tight">Días reglamentarios</div>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setRequestType('Petición')}
-                    className={`p-3 rounded-xl border-2 text-left transition flex items-center gap-2.5 ${
-                      requestType === 'Petición'
-                        ? 'border-indigo-500 bg-indigo-50 text-indigo-900 font-black ring-2 ring-indigo-400/20'
-                        : 'border-zinc-200 bg-white text-zinc-700 font-semibold hover:bg-zinc-50'
-                    }`}
-                  >
-                    <span className="text-xl">📝</span>
-                    <div>
-                      <div className="text-xs font-black">Petición Libre</div>
-                      <div className="text-[10px] text-zinc-500 font-normal leading-tight">Día puntual / turno</div>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setRequestType('Festivo')}
-                    className={`p-3 rounded-xl border-2 text-left transition flex items-center gap-2.5 ${
-                      requestType === 'Festivo'
-                        ? 'border-purple-500 bg-purple-50 text-purple-900 font-black ring-2 ring-purple-400/20'
-                        : 'border-zinc-200 bg-white text-zinc-700 font-semibold hover:bg-zinc-50'
-                    }`}
-                  >
-                    <span className="text-xl">🎉</span>
-                    <div>
-                      <div className="text-xs font-black">Festivo</div>
-                      <div className="text-[10px] text-zinc-500 font-normal leading-tight">Compensación / Asuntos</div>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setRequestType('Baja')}
-                    className={`p-3 rounded-xl border-2 text-left transition flex items-center gap-2.5 ${
-                      requestType === 'Baja'
-                        ? 'border-rose-500 bg-rose-50 text-rose-900 font-black ring-2 ring-rose-400/20'
-                        : 'border-zinc-200 bg-white text-zinc-700 font-semibold hover:bg-zinc-50'
-                    }`}
-                  >
-                    <span className="text-xl">🩺</span>
-                    <div>
-                      <div className="text-xs font-black">Baja Médica</div>
-                      <div className="text-[10px] text-zinc-500 font-normal leading-tight">Incapacidad temporal</div>
-                    </div>
-                  </button>
-                </div>
-              </div>
-
-              {/* 3. DATES */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-black uppercase tracking-wider text-zinc-700 mb-1 flex items-center gap-1">
-                    <Calendar className="w-3.5 h-3.5 text-teal-600" />
-                    <span>Fecha Inicio *</span>
-                  </label>
-                  <input
-                    type="date"
-                    value={startDate}
-                    onChange={(e) => setStartDate(e.target.value)}
-                    className="w-full px-3 py-2 bg-zinc-50 border-2 border-zinc-200 rounded-xl text-sm font-bold text-zinc-900 focus:outline-none focus:border-teal-600"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-black uppercase tracking-wider text-zinc-700 mb-1 flex items-center gap-1">
-                    <Calendar className="w-3.5 h-3.5 text-teal-600" />
-                    <span>Fecha Fin *</span>
-                  </label>
-                  <input
-                    type="date"
-                    value={endDate}
-                    min={startDate}
-                    onChange={(e) => setEndDate(e.target.value)}
-                    className="w-full px-3 py-2 bg-zinc-50 border-2 border-zinc-200 rounded-xl text-sm font-bold text-zinc-900 focus:outline-none focus:border-teal-600"
-                    required
-                  />
-                </div>
-              </div>
-
-              {/* DAYS COUNTER */}
-              {totalDays > 0 && (
-                <div className="flex items-center justify-between bg-teal-50 border border-teal-200 px-4 py-2.5 rounded-xl">
-                  <span className="text-xs font-bold text-teal-900 flex items-center gap-1.5">
-                    <Clock className="w-4 h-4 text-teal-600" />
-                    <span>Duración solicitada:</span>
-                  </span>
-                  <span className="text-xs font-black bg-teal-600 text-white px-2.5 py-1 rounded-lg">
-                    {totalDays} {totalDays === 1 ? 'DÍA' : 'DÍAS'}
-                  </span>
-                </div>
-              )}
-
-              {/* 4. REASON / NOTE */}
-              <div>
-                <label className="block text-xs font-black uppercase tracking-wider text-zinc-700 mb-1 flex items-center gap-1">
-                  <span>Motivo o Comentario (Opcional)</span>
-                </label>
-                <textarea
-                  rows={2}
-                  value={reason}
-                  onChange={(e) => setReason(e.target.value)}
-                  placeholder="Ej: Viaje familiar, cita médica, asuntos personales..."
-                  className="w-full px-3.5 py-2.5 bg-zinc-50 border-2 border-zinc-200 rounded-xl text-sm text-zinc-800 focus:outline-none focus:border-teal-600"
-                />
-              </div>
-
-              {/* SUBMIT BUTTON */}
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                className="w-full flex items-center justify-center gap-2 bg-teal-700 hover:bg-teal-800 disabled:opacity-50 text-white font-black py-3.5 px-4 rounded-xl shadow-lg shadow-teal-700/20 text-sm tracking-wide transition cursor-pointer"
-              >
-                <Send className="w-4 h-4" />
-                <span>{isSubmitting ? 'Enviando petición...' : 'ENVIAR SOLICITUD A XISCO'}</span>
-              </button>
-            </form>
-          </div>
-        )}
-
-        {/* EMPLOYEE HISTORY (If selected) */}
-        {selectedEmployeeId && employeeRequests.length > 0 && (
-          <div className="mt-8 bg-white rounded-2xl border border-zinc-200 p-5 shadow-sm">
-            <h3 className="text-xs font-black uppercase tracking-wider text-zinc-800 mb-3 flex items-center justify-between">
-              <span>Tus solicitudes registradas ({selectedEmployee?.name})</span>
-              <span className="text-teal-600 font-bold">{employeeRequests.length}</span>
-            </h3>
-
-            <div className="space-y-2">
-              {employeeRequests.map((req) => (
-                <div 
-                  key={req.id} 
-                  className="flex items-center justify-between p-3 rounded-xl bg-zinc-50 border border-zinc-200 text-xs"
-                >
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-black text-zinc-900">{req.type}</span>
-                      <span className="text-zinc-400 font-normal">
-                        ({req.startDate} al {req.endDate})
-                      </span>
-                    </div>
-                    {req.reason && (
-                      <p className="text-[11px] text-zinc-500 italic mt-0.5">{req.reason}</p>
-                    )}
-                  </div>
-                  <span className="inline-flex items-center gap-1 font-bold text-[10px] uppercase px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
-                    <ShieldCheck className="w-3 h-3" />
-                    <span>Registrada</span>
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* FOOTER */}
-        <div className="mt-8 text-center text-[11px] text-zinc-400 font-medium">
-          Sistema de Cuadrantes y Gestión de Personal • Turnos Xisco
+        <div className="flex gap-1 mb-4">
+          {([['turnos', 'Turnos'], ['pedir', 'Pedir días']] as const).map(([id, label]) => (
+            <button key={id} type="button" onClick={() => setTab(id)} className={`flex-1 py-2.5 rounded-xl text-sm font-black ${tab === id ? 'bg-zinc-900 text-white' : 'bg-white text-zinc-600 border border-zinc-200'}`}>{label}</button>
+          ))}
         </div>
 
+        {tab === 'turnos' && (
+          <div className="bg-white rounded-2xl border border-zinc-200 p-4">
+            <div className="flex items-center justify-between mb-4">
+              <button type="button" onClick={() => setWeek(addDaysISO(week, -7))} className="p-2 rounded-lg border border-zinc-200 hover:bg-zinc-50" aria-label="Semana anterior"><ChevronLeft className="w-5 h-5" /></button>
+              <div className="text-center">
+                <div className="font-black text-zinc-900">{weekLabel}</div>
+                <button type="button" onClick={() => setWeek(getMondayISO())} className="text-xs font-bold text-teal-700">Ir a esta semana</button>
+              </div>
+              <button type="button" onClick={() => setWeek(addDaysISO(week, 7))} className="p-2 rounded-lg border border-zinc-200 hover:bg-zinc-50" aria-label="Semana siguiente"><ChevronRight className="w-5 h-5" /></button>
+            </div>
+
+            {myRow && (
+              <div className="grid grid-cols-7 gap-1.5 mb-5">
+                {myRow.shifts.map((s, i) => (
+                  <div key={s.day} className="text-center">
+                    <div className="text-[11px] font-bold text-zinc-500">{s.day.slice(0, 3)}</div>
+                    <div className="text-[11px] text-zinc-400 mb-1">{addDaysISO(week, i).slice(8)}</div>
+                    <div className={`h-14 rounded-lg flex items-center justify-center font-black ${s.label.length > 3 ? 'text-xs' : 'text-xl'} ${shiftStyle(s.shift)}`}>{s.label}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {!selectedId && <p className="text-sm text-zinc-500 mb-4">Elige tu nombre arriba para ver tus turnos destacados.</p>}
+
+            <div className={`overflow-x-auto ${loading ? 'opacity-50' : ''}`}>
+              <table className="w-full text-sm border-collapse">
+                <thead>
+                  <tr>
+                    <th className="text-left p-1.5 text-xs font-black text-zinc-600">Equipo</th>
+                    {DAYS_OF_WEEK.map(d => <th key={d} className="p-1.5 text-xs font-black text-zinc-600">{d.slice(0, 2)}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map(r => (
+                    <tr key={r.employeeId} className={r.employeeId === selectedId ? 'bg-teal-50' : ''}>
+                      <td className="p-1.5 font-bold text-zinc-900 whitespace-nowrap">{r.employeeName}</td>
+                      {r.shifts.map(s => (
+                        <td key={s.day} className="p-0.5">
+                          <div className={`h-9 min-w-[2.25rem] rounded flex items-center justify-center font-black text-xs ${shiftStyle(s.shift)}`}>{s.label}</div>
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 mt-4 text-xs text-zinc-600">
+              {legend.map(l => <span key={l.code}><b className="text-zinc-900">{l.code}</b> {l.label}</span>)}
+            </div>
+          </div>
+        )}
+
+        {tab === 'pedir' && (submitted ? (
+          <div className="bg-white rounded-2xl border border-emerald-100 p-6 text-center">
+            <CheckCircle2 className="w-12 h-12 text-emerald-600 mx-auto mb-3" />
+            <h2 className="text-xl font-black text-zinc-900 mb-1">Solicitud enviada</h2>
+            <p className="text-sm text-zinc-600 mb-5">{submitted.type} del {submitted.startDate} al {submitted.endDate}. Ya cuenta en el cuadrante.</p>
+            <a href={whatsapp(submitted)} target="_blank" rel="noopener noreferrer" className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-black py-3 rounded-xl mb-2">
+              <MessageSquare className="w-5 h-5" /> Avisar a {managerName} por WhatsApp
+            </a>
+            <button type="button" onClick={() => { setSubmitted(null); setStartDate(''); setEndDate(''); setReason(''); }} className="w-full py-2.5 rounded-xl border border-zinc-300 font-bold text-zinc-700">Hacer otra solicitud</button>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="bg-white rounded-2xl border border-zinc-200 p-5 space-y-4">
+            {errorMessage && <div className="flex items-center gap-2 bg-red-50 text-red-700 text-xs font-bold p-3 rounded-xl border border-red-200"><AlertTriangle className="w-4 h-4" />{errorMessage}</div>}
+            <div className="grid grid-cols-2 gap-2">
+              {([['Vacaciones', '🏖️'], ['Petición', '📝'], ['Festivo', '🎉'], ['Baja', '🩺']] as [RequestType, string][]).map(([t, icon]) => (
+                <button key={t} type="button" onClick={() => setRequestType(t)} className={`p-3 rounded-xl border-2 text-left text-sm font-black ${requestType === t ? 'border-teal-600 bg-teal-50 text-teal-900' : 'border-zinc-200 text-zinc-700'}`}>
+                  {icon} {t === 'Petición' ? 'Día libre' : t === 'Baja' ? 'Baja médica' : t}
+                </button>
+              ))}
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="text-xs font-black text-zinc-700">Desde<input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="mt-1 w-full px-3 py-2 bg-zinc-50 border-2 border-zinc-200 rounded-xl text-sm font-bold" required /></label>
+              <label className="text-xs font-black text-zinc-700">Hasta<input type="date" value={endDate} min={startDate} onChange={e => setEndDate(e.target.value)} className="mt-1 w-full px-3 py-2 bg-zinc-50 border-2 border-zinc-200 rounded-xl text-sm font-bold" required /></label>
+            </div>
+            {totalDays > 0 && <p className="text-xs font-bold text-teal-800">{totalDays} {totalDays === 1 ? 'día' : 'días'}</p>}
+            <label className="block text-xs font-black text-zinc-700">Motivo (opcional)
+              <textarea rows={2} value={reason} onChange={e => setReason(e.target.value)} placeholder="Viaje, cita médica…" className="mt-1 w-full px-3 py-2 bg-zinc-50 border-2 border-zinc-200 rounded-xl text-sm" />
+            </label>
+            <button type="submit" disabled={isSubmitting} className="w-full flex items-center justify-center gap-2 bg-teal-700 hover:bg-teal-800 disabled:opacity-50 text-white font-black py-3.5 rounded-xl">
+              <Send className="w-4 h-4" /> {isSubmitting ? 'Enviando…' : 'Enviar solicitud'}
+            </button>
+            {myRequests.length > 0 && (
+              <div className="pt-3 border-t border-zinc-100">
+                <p className="text-xs font-black text-zinc-700 mb-2 flex items-center gap-1"><Calendar className="w-3.5 h-3.5" /> Tus solicitudes</p>
+                {myRequests.map(r => (
+                  <div key={r.id} className="flex justify-between text-xs py-1.5 border-b border-zinc-50">
+                    <span><b>{r.type}</b> {r.startDate} al {r.endDate}</span>
+                    <span className={`font-bold ${r.status === 'rejected' ? 'text-rose-700' : 'text-emerald-700'}`}>{r.status === 'rejected' ? 'Rechazada' : 'Registrada'}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </form>
+        ))}
       </div>
     </div>
   );

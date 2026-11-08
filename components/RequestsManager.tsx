@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { AppConfig, ScheduleRequest, RequestType } from '../types';
-import { PlusIcon, TrashIcon, SuitcaseIcon, EditIcon } from './Icons';
+import { TrashIcon, SuitcaseIcon, EditIcon } from './Icons';
+import { adminFetch } from '../api';
 
 interface RequestsManagerProps {
   config: AppConfig;
@@ -8,220 +9,115 @@ interface RequestsManagerProps {
   onOpenSharePortal?: () => void;
 }
 
+const STATUS_LABEL: Record<string, { text: string; cls: string }> = {
+  approved: { text: 'Aprobada', cls: 'bg-emerald-100 text-emerald-800 border-emerald-200' },
+  pending: { text: 'Pendiente (se aplica)', cls: 'bg-amber-100 text-amber-800 border-amber-200' },
+  rejected: { text: 'Rechazada', cls: 'bg-rose-100 text-rose-800 border-rose-200' },
+};
+
 export default function RequestsManager({ config, onUpdateRequests, onOpenSharePortal }: RequestsManagerProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [newRequest, setNewRequest] = useState<Partial<ScheduleRequest>>({
-    type: 'Vacaciones',
-    startDate: '',
-    endDate: '',
-    employeeId: '',
-  });
+  const empty: Partial<ScheduleRequest> = { type: 'Vacaciones', startDate: '', endDate: '', employeeId: '', reason: '' };
+  const [form, setForm] = useState<Partial<ScheduleRequest>>(empty);
 
-  const cleanAyudantes = (config.ayudantes || []).filter(name => name.trim().toUpperCase() !== 'LORENA');
-  const employees = [
-    { id: 'jefe', name: config.jefe, role: 'Jefe' },
-    { id: 'subjefe', name: config.subjefe, role: '2º Jefe' },
-    { id: 'conserje', name: config.conserje, role: 'Conserje' },
-    ...config.recepcionistas.map((name, i) => ({ id: `rec-${i}`, name, role: 'Recepcionista' })),
-    ...cleanAyudantes.map((name, i) => ({ id: `ayu-${i}`, name, role: 'Ayudante' })),
-    ...config.extraEmployees.map(e => ({ id: e.id, name: e.name, role: e.role }))
-  ].filter(e => e.name.trim() !== '');
+  const employees = config.employees.filter(e => e.name.trim());
+  const nameOf = (id: string) => employees.find(e => e.id === id)?.name || '¿?';
 
-  const handleSaveRequest = () => {
-    if (!newRequest.employeeId || !newRequest.startDate || !newRequest.endDate) return;
-
-    let updatedRequests: ScheduleRequest[];
-    if (editingId) {
-      updatedRequests = config.requests.map(r => 
-        r.id === editingId 
-          ? { ...r, ...newRequest as ScheduleRequest, id: editingId } 
-          : r
-      );
-      setEditingId(null);
-    } else {
-      const request: ScheduleRequest = {
-        id: Date.now().toString(),
-        employeeId: newRequest.employeeId,
-        type: newRequest.type as RequestType,
-        startDate: newRequest.startDate,
-        endDate: newRequest.endDate,
-        reason: newRequest.reason,
-        status: 'approved'
-      };
-      updatedRequests = [...(config.requests || []), request];
-    }
-
-    onUpdateRequests(updatedRequests);
-    
-    // Sync with backend API
-    fetch('/api/requests', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updatedRequests)
-    }).catch(() => {});
-
-    setNewRequest({ ...newRequest, startDate: '', endDate: '', employeeId: '', reason: '' });
+  const persist = (list: ScheduleRequest[]) => {
+    onUpdateRequests(list);
+    adminFetch('/api/requests', { method: 'PUT', body: JSON.stringify(list) }).catch(() => {});
   };
 
-  const startEdit = (req: ScheduleRequest) => {
-    setNewRequest({
-      employeeId: req.employeeId,
-      type: req.type,
-      startDate: req.startDate,
-      endDate: req.endDate,
-      reason: req.reason
-    });
-    setEditingId(req.id);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  const cancelEdit = () => {
+  const handleSave = () => {
+    if (!form.employeeId || !form.startDate || !form.endDate) return;
+    if (form.endDate < form.startDate) return;
+    const list = editingId
+      ? config.requests.map(r => (r.id === editingId ? { ...r, ...form } as ScheduleRequest : r))
+      : [...config.requests, { ...form, id: Date.now().toString(), status: 'approved', createdAt: new Date().toISOString() } as ScheduleRequest];
+    persist(list);
     setEditingId(null);
-    setNewRequest({ ...newRequest, startDate: '', endDate: '', employeeId: '', reason: '' });
+    setForm(empty);
   };
+
+  const setStatus = (id: string, status: string) => persist(config.requests.map(r => (r.id === id ? { ...r, status } : r)));
 
   const removeRequest = (id: string) => {
-    const updated = config.requests.filter(r => r.id !== id);
-    onUpdateRequests(updated);
-    fetch(`/api/requests/${id}`, { method: 'DELETE' }).catch(() => {});
+    onUpdateRequests(config.requests.filter(r => r.id !== id));
+    adminFetch(`/api/requests/${id}`, { method: 'DELETE' }).catch(() => {});
   };
 
+  const sorted = [...config.requests].sort((a, b) => b.startDate.localeCompare(a.startDate));
+
   return (
-    <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm">
+    <div className="bg-white p-6 rounded-2xl border border-gray-100">
       <div className="flex flex-wrap items-center justify-between gap-4 mb-6 pb-4 border-b border-gray-100">
-        <div className="flex items-center space-x-3">
-          <div className="p-2 bg-orange-100 rounded-xl text-orange-600">
-            <SuitcaseIcon />
-          </div>
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-orange-100 rounded-xl text-orange-600"><SuitcaseIcon /></div>
           <div>
-            <h2 className="text-xl font-black text-gray-900 tracking-tight">Peticiones y Vacaciones</h2>
-            <p className="text-xs text-gray-400 font-medium italic">El sistema asignará automáticamente libres a quien esté de vacaciones.</p>
+            <h2 className="text-xl font-black text-gray-900">Peticiones y vacaciones</h2>
+            <p className="text-xs text-gray-500">Se aplican solas al cuadrante. Las rechazadas no cuentan.</p>
           </div>
         </div>
-
         {onOpenSharePortal && (
-          <button
-            type="button"
-            onClick={onOpenSharePortal}
-            className="flex items-center gap-2 bg-teal-50 hover:bg-teal-100 text-teal-800 border-2 border-teal-300 font-black text-xs px-4 py-2.5 rounded-xl shadow-xs transition"
-          >
-            <span>📲</span>
-            <span>Compartir Enlace con el Personal</span>
+          <button type="button" onClick={onOpenSharePortal} className="flex items-center gap-2 bg-teal-50 hover:bg-teal-100 text-teal-800 border-2 border-teal-300 font-black text-xs px-4 py-2.5 rounded-xl">
+            📲 Compartir enlace con el personal
           </button>
         )}
       </div>
 
-      {/* ADD REQUEST FORM */}
-      <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8 p-4 bg-gray-50 rounded-2xl border border-gray-100">
-        <div className="col-span-1 md:col-span-2">
-          <label className="block text-[8px] font-black text-gray-400 uppercase tracking-widest mb-1 ml-1">Empleado</label>
-          <select 
-            value={newRequest.employeeId}
-            onChange={(e) => setNewRequest({ ...newRequest, employeeId: e.target.value })}
-            className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-orange-500 transition"
-          >
-            <option value="">Seleccionar...</option>
-            {employees.map(e => (
-              <option key={e.id} value={e.id}>{e.name} ({e.role})</option>
-            ))}
+      <div className="grid grid-cols-1 md:grid-cols-6 gap-3 mb-6 p-4 bg-gray-50 rounded-2xl border border-gray-100">
+        <label className="md:col-span-2 text-xs font-bold text-gray-600">Empleado
+          <select value={form.employeeId} onChange={e => setForm({ ...form, employeeId: e.target.value })} className="mt-1 w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm font-medium">
+            <option value="">Seleccionar…</option>
+            {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
           </select>
-        </div>
-        <div>
-          <label className="block text-[8px] font-black text-gray-400 uppercase tracking-widest mb-1 ml-1">Desde</label>
-          <input 
-            type="date" 
-            value={newRequest.startDate}
-            onChange={(e) => setNewRequest({ ...newRequest, startDate: e.target.value })}
-            className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-orange-500 transition"
-          />
-        </div>
-        <div>
-          <label className="block text-[8px] font-black text-gray-400 uppercase tracking-widest mb-1 ml-1">Hasta</label>
-          <input 
-            type="date" 
-            value={newRequest.endDate}
-            onChange={(e) => setNewRequest({ ...newRequest, endDate: e.target.value })}
-            className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-orange-500 transition"
-          />
-        </div>
-        <div>
-          <label className="block text-[8px] font-black text-gray-400 uppercase tracking-widest mb-1 ml-1">Tipo</label>
-          <select 
-            value={newRequest.type}
-            onChange={(e) => setNewRequest({ ...newRequest, type: e.target.value as RequestType })}
-            className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-orange-500 transition"
-          >
+        </label>
+        <label className="text-xs font-bold text-gray-600">Desde
+          <input type="date" value={form.startDate} onChange={e => setForm({ ...form, startDate: e.target.value })} className="mt-1 w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm" />
+        </label>
+        <label className="text-xs font-bold text-gray-600">Hasta
+          <input type="date" value={form.endDate} min={form.startDate} onChange={e => setForm({ ...form, endDate: e.target.value })} className="mt-1 w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm" />
+        </label>
+        <label className="text-xs font-bold text-gray-600">Tipo
+          <select value={form.type} onChange={e => setForm({ ...form, type: e.target.value as RequestType })} className="mt-1 w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm">
             <option value="Vacaciones">Vacaciones</option>
             <option value="Petición">Petición</option>
             <option value="Festivo">Festivo</option>
             <option value="Baja">Baja</option>
           </select>
-        </div>
+        </label>
         <div className="flex items-end gap-2">
-          <button 
-            onClick={handleSaveRequest}
-            className={`flex-1 h-[40px] ${editingId ? 'bg-blue-600 hover:bg-blue-700' : 'bg-orange-600 hover:bg-orange-700'} text-white rounded-xl font-black text-xs transition active:scale-95 shadow-lg`}
-          >
-            {editingId ? 'GUARDAR' : 'AÑADIR'}
+          <button type="button" onClick={handleSave} className={`flex-1 h-[40px] ${editingId ? 'bg-blue-600 hover:bg-blue-700' : 'bg-orange-600 hover:bg-orange-700'} text-white rounded-xl font-black text-xs`}>
+            {editingId ? 'Guardar' : 'Añadir'}
           </button>
-          {editingId && (
-            <button 
-              onClick={cancelEdit}
-              className="h-[40px] px-4 bg-gray-200 text-gray-600 rounded-xl font-black text-xs hover:bg-gray-300 transition active:scale-95"
-            >
-              CANCELAR
-            </button>
-          )}
+          {editingId && <button type="button" onClick={() => { setEditingId(null); setForm(empty); }} className="h-[40px] px-3 bg-gray-200 text-gray-700 rounded-xl font-black text-xs">Cancelar</button>}
         </div>
       </div>
 
-      {/* REQUESTS LIST */}
-      <div className="space-y-3">
-        {config.requests.length === 0 ? (
-          <div className="text-center py-10 bg-gray-50/50 rounded-2xl border-2 border-dashed border-gray-100">
-            <p className="text-sm text-gray-400 italic font-medium">No hay peticiones registradas.</p>
-          </div>
-        ) : (
-          config.requests.map(req => {
-            const emp = employees.find(e => e.id === req.employeeId);
-            return (
-              <div key={req.id} className="flex items-center justify-between p-4 bg-white border border-gray-100 rounded-2xl hover:border-orange-200 hover:shadow-md transition-all group">
-                <div className="flex items-center space-x-4">
-                  <div className="w-8 h-8 rounded-full bg-orange-50 flex items-center justify-center text-orange-600 font-bold text-xs">
-                    {emp?.name.charAt(0).toUpperCase()}
-                  </div>
-                  <div>
-                    <div className="text-sm font-black text-gray-900">{emp?.name}</div>
-                    <div className="text-[10px] font-bold text-orange-500 uppercase tracking-widest">{req.type}</div>
-                  </div>
-                </div>
-                <div className="flex items-center space-x-2">
-                  <div className="text-right mr-4">
-                    <div className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Periodo</div>
-                    <div className="text-xs font-bold text-gray-700">{req.startDate} al {req.endDate}</div>
-                    {req.reason && <div className="text-[10px] text-gray-400 italic max-w-[180px] truncate">{req.reason}</div>}
-                  </div>
-                  <div className="flex items-center space-x-1">
-                    <button 
-                      onClick={() => startEdit(req)}
-                      className="p-2 text-gray-400 hover:text-blue-500 transition opacity-0 group-hover:opacity-100"
-                      title="Editar"
-                    >
-                      <EditIcon />
-                    </button>
-                    <button 
-                      onClick={() => removeRequest(req.id)}
-                      className="p-2 text-gray-400 hover:text-red-500 transition opacity-0 group-hover:opacity-100"
-                      title="Eliminar"
-                    >
-                      <TrashIcon />
-                    </button>
-                  </div>
+      <div className="space-y-2">
+        {sorted.length === 0 ? (
+          <p className="text-center py-10 text-sm text-gray-400 bg-gray-50 rounded-2xl border-2 border-dashed border-gray-100">No hay peticiones. Añade una arriba o comparte el enlace con el personal.</p>
+        ) : sorted.map(req => {
+          const st = STATUS_LABEL[req.status || 'approved'] || STATUS_LABEL.approved;
+          return (
+            <div key={req.id} className={`flex flex-wrap items-center justify-between gap-3 p-3 border rounded-2xl ${req.status === 'rejected' ? 'bg-gray-50 border-gray-100 opacity-60' : 'bg-white border-gray-100'}`}>
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full bg-orange-50 flex items-center justify-center text-orange-600 font-bold text-xs">{nameOf(req.employeeId).charAt(0)}</div>
+                <div>
+                  <div className="text-sm font-black text-gray-900">{nameOf(req.employeeId)} <span className="font-bold text-orange-600 text-xs ml-1">{req.type}</span></div>
+                  <div className="text-xs text-gray-600">{req.startDate} al {req.endDate}{req.reason ? ` · ${req.reason}` : ''}</div>
                 </div>
               </div>
-            );
-          })
-        )}
+              <div className="flex items-center gap-1">
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${st.cls}`}>{st.text}</span>
+                {req.status !== 'approved' && <button type="button" onClick={() => setStatus(req.id, 'approved')} className="text-xs font-bold px-2 py-1 rounded-lg text-emerald-700 hover:bg-emerald-50">Aprobar</button>}
+                {req.status !== 'rejected' && <button type="button" onClick={() => setStatus(req.id, 'rejected')} className="text-xs font-bold px-2 py-1 rounded-lg text-rose-700 hover:bg-rose-50">Rechazar</button>}
+                <button type="button" onClick={() => { setForm({ employeeId: req.employeeId, type: req.type, startDate: req.startDate, endDate: req.endDate, reason: req.reason }); setEditingId(req.id); }} className="p-2 text-gray-400 hover:text-blue-600" title="Editar"><EditIcon /></button>
+                <button type="button" onClick={() => removeRequest(req.id)} className="p-2 text-gray-400 hover:text-red-600" title="Eliminar"><TrashIcon /></button>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
