@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { AppConfig, DayOfWeek, Shift } from './types';
-import { DAYS_OF_WEEK, DEFAULT_CONFIG, PDF_COLORS, displayShift, getMondayISO, mergeShiftPrefs, morningTeam, shiftLegend, shiftStyle } from './constants';
+import { DAYS_OF_WEEK, DEFAULT_CONFIG, PDF_COLORS, displayShift, getMondayISO, morningTeam, shiftLegend, shiftStyle } from './constants';
 import { normalizeConfig, migrateOldOverrides } from './configMigration';
 import { addDaysISO, getNightPlusForWeek, getWeekSchedule, nightHoursOfShift } from './scheduleService';
 import { adminFetch, getStoredPin, setStoredPin } from './api';
@@ -129,16 +129,8 @@ export default function App() {
         return changed ? { ...prev, requests: [...map.values()] } : prev;
       });
     }).catch(() => {});
-    const pullPrefs = () => fetch('/api/public/preferences').then(r => (r.ok ? r.json() : null)).then(map => {
-      if (!map || typeof map !== 'object') return;
-      setConfig(prev => {
-        const employees = mergeShiftPrefs(prev.employees, map);
-        return employees === prev.employees ? prev : { ...prev, employees };
-      });
-    }).catch(() => {});
     pull();
-    pullPrefs();
-    const i = setInterval(() => { pull(); pullPrefs(); }, 30000);
+    const i = setInterval(pull, 30000);
     return () => clearInterval(i);
   }, [auth]);
 
@@ -210,7 +202,6 @@ export default function App() {
           window.history.pushState({}, '', window.location.pathname);
         } : undefined}
         onRequestSubmitted={req => setConfig(prev => ({ ...prev, requests: [...prev.requests, req] }))}
-        onPrefsSaved={(employeeId, shiftPrefs) => setConfig(prev => ({ ...prev, employees: prev.employees.map(e => (e.id === employeeId ? { ...e, shiftPrefs } : e)) }))}
       />
     );
   }
@@ -317,7 +308,7 @@ export default function App() {
         )}
         {prefNotes.length > 0 && (
           <div className="mt-3 pt-3 border-t border-zinc-300/60">
-            <p className="text-xs font-black text-zinc-700 mb-1">Preferencias de mañanas/tardes que no han cabido esta semana</p>
+            <p className="text-xs font-black text-zinc-700 mb-1">Mínimos de mañanas/tardes que no han cabido esta semana</p>
             <ul className="text-xs text-zinc-700 space-y-0.5 pl-5 list-disc">
               {prefNotes.map((i, idx) => <li key={idx}>{i.message}</li>)}
             </ul>

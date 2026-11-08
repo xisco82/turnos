@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { normalizeConfig } from './configMigration';
-import { DEFAULT_CONFIG, cleanShiftPrefs, displayShift, effectiveRules, mergeShiftPrefs, shiftLegend } from './constants';
+import { DEFAULT_CONFIG, displayShift, shiftLegend } from './constants';
 import { getNightPlusForWeek, getPublicWeekSchedule, mondayOfISO } from './scheduleService';
 import { AppConfig, ScheduleRequest } from './types';
 
@@ -18,7 +18,6 @@ app.use(express.json({ limit: '5mb' }));
 const DATA_DIR = path.resolve(__dirname, 'data');
 const REQUESTS_FILE = path.resolve(DATA_DIR, 'requests.json');
 const CONFIG_FILE = path.resolve(DATA_DIR, 'config.json');
-const PREFS_FILE = path.resolve(DATA_DIR, 'preferences.json');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const readJSON = <T>(file: string, fallback: T): T => {
@@ -32,18 +31,12 @@ const storedConfig = (): AppConfig | null => {
 };
 const effectiveConfig = (): AppConfig => storedConfig() || normalizeConfig(structuredClone(DEFAULT_CONFIG));
 const readRequests = (): ScheduleRequest[] => readJSON<ScheduleRequest[]>(REQUESTS_FILE, []);
-/** Preferencias de mañanas/tardes enviadas por los empleados: { [employeeId]: { mornings, afternoons, updatedAt } } */
-const readPrefs = (): Record<string, any> => readJSON<Record<string, any>>(PREFS_FILE, {});
 
 /** Configuración con todas las peticiones (las del panel y las enviadas desde el móvil). */
 const configWithRequests = (): AppConfig => {
   const cfg = effectiveConfig();
   const ids = new Set(cfg.requests.map(r => r.id));
-  return {
-    ...cfg,
-    employees: mergeShiftPrefs(cfg.employees, readPrefs()),
-    requests: [...cfg.requests, ...readRequests().filter(r => !ids.has(r.id))],
-  };
+  return { ...cfg, requests: [...cfg.requests, ...readRequests().filter(r => !ids.has(r.id))] };
 };
 
 // ── Seguridad: sólo el administrador ve y cambia la configuración (roles incluidos) ──
@@ -75,39 +68,8 @@ app.get('/api/public/employees', (_req, res) => {
   const cfg = effectiveConfig();
   res.json({
     managerName: cfg.managerName,
-    employees: cfg.employees.filter(e => e.active && e.name.trim()).map(e => ({
-      id: e.id,
-      name: e.name,
-      canMorning: e.canMorning && !e.permanentNight,
-      canAfternoon: e.canAfternoon && !e.permanentNight,
-      workDays: effectiveRules(cfg, e).workDays,
-    })),
-    shiftLabels: { M: cfg.shifts.M.label, T: cfg.shifts.T.label },
+    employees: cfg.employees.filter(e => e.active && e.name.trim()).map(e => ({ id: e.id, name: e.name })),
   });
-});
-
-// ── Preferencias de mañanas / tardes por semana (las envía cada empleado desde su portal) ──
-app.get('/api/public/preferences', (_req, res) => {
-  const cfg = effectiveConfig();
-  const merged = mergeShiftPrefs(cfg.employees, readPrefs());
-  const out: Record<string, unknown> = {};
-  merged.forEach(e => { out[e.id] = e.shiftPrefs; });
-  res.json(out);
-});
-
-app.put('/api/public/preferences', (req, res) => {
-  const b = req.body || {};
-  const emp = effectiveConfig().employees.find(e => e.id === String(b.employeeId));
-  if (!emp || !emp.active) { res.status(404).json({ error: 'Empleado no encontrado' }); return; }
-  const prefs = cleanShiftPrefs({ mornings: b.mornings, afternoons: b.afternoons });
-  const limit = effectiveRules(effectiveConfig(), emp).workDays;
-  if ((prefs.mornings ?? 0) + (prefs.afternoons ?? 0) > Math.max(limit, 0)) {
-    res.status(400).json({ error: `Entre mañanas y tardes no pueden pasar de ${limit} días a la semana.` });
-    return;
-  }
-  const saved = { ...prefs, updatedAt: new Date().toISOString() };
-  writeJSON(PREFS_FILE, { ...readPrefs(), [emp.id]: saved });
-  res.json(saved);
 });
 
 app.get('/api/public/schedule', (req, res) => {

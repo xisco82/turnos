@@ -154,21 +154,6 @@ export const cleanShiftPrefs = (p: any): ShiftPrefs => ({
 
 export const hasShiftPrefs = (p: ShiftPrefs | undefined) => !!p && (p.mornings !== null || p.afternoons !== null);
 
-/** Aplica las preferencias enviadas desde el portal: para cada empleado gana la más reciente. */
-export const mergeShiftPrefs = (employees: EmployeeConfig[], incoming: Record<string, any> | null | undefined): EmployeeConfig[] => {
-  if (!incoming) return employees;
-  let changed = false;
-  const out = employees.map(e => {
-    const inc = incoming[e.id];
-    if (!inc) return e;
-    const cleaned = cleanShiftPrefs(inc);
-    if ((cleaned.updatedAt || '') <= (e.shiftPrefs?.updatedAt || '')) return e;
-    changed = true;
-    return { ...e, shiftPrefs: cleaned };
-  });
-  return changed ? out : employees;
-};
-
 export const newEmployee = (partial: Partial<EmployeeConfig> = {}): EmployeeConfig => ({
   id: `emp-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
   name: '',

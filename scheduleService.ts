@@ -141,7 +141,7 @@ const hoursFor = (ctx: EmpCtx, d: number, code: number, p: SolveParams) =>
 
 const PATTERN_CAP = 6000;
 /** Peso de cada mañana/tarde de diferencia con la preferencia del empleado. */
-const PREF_WEIGHT = 8;
+const PREF_WEIGHT = 150;
 
 function enumeratePatterns(ctx: EmpCtx, p: SolveParams): Pattern[] {
   const out: Pattern[] = [];
@@ -206,10 +206,10 @@ function enumeratePatterns(ctx: EmpCtx, p: SolveParams): Pattern[] {
       } else last = -1;
     }
     cost += 2 * (t - ctx.expT) ** 2 + 2 * (s - ctx.expS) ** 2;
-    // Preferencia del empleado: cada mañana o tarde de diferencia con lo que pidió cuesta.
-    // El especial (10-18) cuenta como mañana. Es una preferencia suave: la cobertura manda.
-    if (ctx.prefM !== null) cost += PREF_WEIGHT * Math.abs(m + s - ctx.prefM);
-    if (ctx.prefT !== null) cost += PREF_WEIGHT * Math.abs(t - ctx.prefT);
+    // Preferencia del empleado = MÍNIMO: cada mañana o tarde que le falta para llegar a lo que pidió cuesta;
+    // tener más no penaliza. El especial (10-18) cuenta como mañana. Es suave: la cobertura manda.
+    if (ctx.prefM !== null) cost += PREF_WEIGHT * Math.max(0, ctx.prefM - (m + s));
+    if (ctx.prefT !== null) cost += PREF_WEIGHT * Math.max(0, ctx.prefT - t);
     if (ctx.tMin !== ctx.tMax) cost += 10 * Math.abs(work - ctx.targetWork);
     if (ctx.emp.weekendRotation && !ctx.forcedWeekendOff && isOffLike(seq[5]) && isOffLike(seq[6])
       && ctx.fixedStr[5] === null && ctx.fixedStr[6] === null) cost += 25;
@@ -284,6 +284,8 @@ const FIND_BUDGET = 40000;
 const IMPROVE_BUDGET = 15000;
 /** Tiempo máximo buscando una solución perfecta antes de dar el mejor cuadrante posible. */
 const SEARCH_TIME_MS = 600;
+/** Tiempo extra para mejorar el cuadrante cuando hay preferencias de mañanas/tardes. */
+const PREF_IMPROVE_MS = 400;
 
 function solve(ctxs: EmpCtx[], pats: Pattern[][], limits: DayLimits[]): { choice: number[]; exact: boolean } {
   const n = ctxs.length;
@@ -304,11 +306,16 @@ function solve(ctxs: EmpCtx[], pats: Pattern[][], limits: DayLimits[]): { choice
   };
   const orders = [bySize, byKind, [...bySize].reverse()];
   const deadline = Date.now() + SEARCH_TIME_MS;
+  // Si alguien tiene preferencias, se dedica más tiempo a mejorar el reparto.
+  const hasPrefs = ctxs.some(c => c.prefM !== null || c.prefT !== null);
+  const improveDeadline = Date.now() + (hasPrefs ? PREF_IMPROVE_MS : 0);
   for (let attempt = 0; ; attempt++) {
     const order = attempt < orders.length ? orders[attempt] : shuffled();
     const found = runBranchAndBound(ctxs, pats, limits, order, best);
-    if (found) { best = found.cost; bestChoice = found.choice; break; }
-    if (bestChoice || (attempt >= orders.length && Date.now() > deadline)) break;
+    if (found) { best = found.cost; bestChoice = found.choice; }
+    // Con solución válida se sigue mejorando (otros órdenes de búsqueda) hasta agotar el tiempo.
+    if (Date.now() > (bestChoice ? improveDeadline : deadline) || (!found && !hasPrefs && bestChoice)) break;
+    if (!bestChoice && attempt >= orders.length && Date.now() > deadline) break;
   }
   if (bestChoice) return { choice: bestChoice, exact: true };
   return { choice: ls.choice, exact: false };
@@ -596,7 +603,6 @@ function solveWeek(config: AppConfig, weekStart: string, state: ChainState): { r
     const fair = er.fair ? 0.5 : 0;
     const expT = emp.canAfternoon && !emp.permanentNight && tShare(emp) > 0
       ? Math.max(0, Math.min(target, ratioT * target * tShare(emp) + fair * (ratioT * h.work * tShare(emp) - h.T))) : 0;
-    const expTFinal = (emp.canAfternoon && !emp.permanentNight && emp.shiftPrefs?.afternoons != null) ? Math.min(target, emp.shiftPrefs.afternoons) : expT;
     const expS = emp.canSpecial && !emp.permanentNight ? Math.max(0, Math.min(target, ratioS * target + fair * (ratioS * h.work - h.S))) : 0;
     const fixedLs = f.map((s, d) => (s === 'L' ? d : -1)).filter(d => d >= 0);
     const fixedLsContiguous = fixedLs.every((d, i) => i === 0 || d === fixedLs[i - 1] + 1);
@@ -611,7 +617,7 @@ function solveWeek(config: AppConfig, weekStart: string, state: ChainState): { r
       restOn: er.restOn,
       restHours: er.restHours,
       consecutive: er.consecutive && fixedLsContiguous,
-      forcedWeekendOff, expT: expTFinal, expS, relaxNotes: [],
+      forcedWeekendOff, expT, expS, relaxNotes: [],
       prefM: emp.canMorning || emp.morningOnlyDays?.length ? (emp.shiftPrefs?.mornings ?? null) : null,
       prefT: emp.canAfternoon && !emp.permanentNight ? (emp.shiftPrefs?.afternoons ?? null) : null,
     };
@@ -698,9 +704,9 @@ function solveWeek(config: AppConfig, weekStart: string, state: ChainState): { r
     const m = sh.filter(s => s === 'M' || s === 'S').length;
     const t = sh.filter(s => s === 'T').length;
     const parts: string[] = [];
-    if (c.prefM !== null && m !== c.prefM) parts.push(`${c.prefM} mañana${c.prefM === 1 ? '' : 's'} (tiene ${m})`);
-    if (c.prefT !== null && t !== c.prefT) parts.push(`${c.prefT} tarde${c.prefT === 1 ? '' : 's'} (tiene ${t})`);
-    if (parts.length) notes.push({ level: 'info', rule: 'Preferencias', message: `${c.emp.name} prefería ${parts.join(' y ')}; no ha cabido esta semana (cobertura, rotación de noches o fin de semana libre).` });
+    if (c.prefM !== null && m < c.prefM) parts.push(`${c.prefM} mañana${c.prefM === 1 ? '' : 's'} (tiene ${m})`);
+    if (c.prefT !== null && t < c.prefT) parts.push(`${c.prefT} tarde${c.prefT === 1 ? '' : 's'} (tiene ${t})`);
+    if (parts.length) notes.push({ level: 'info', rule: 'Preferencias', message: `${c.emp.name} quería al menos ${parts.join(' y al menos ')}; no ha cabido esta semana (cobertura, rotación de noches o fin de semana libre).` });
   });
 
   if (!exact) notes.unshift({ level: 'error', rule: 'Generación', message: 'No hay forma de cumplir todas las normas a la vez con el personal disponible esta semana. Se ha generado el cuadrante con el menor número posible de incumplimientos (detalle abajo).' });
