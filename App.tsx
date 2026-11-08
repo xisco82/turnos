@@ -6,7 +6,6 @@ import { addDaysISO, getNightPlusForWeek, getWeekSchedule, nightHoursOfShift } f
 import { adminFetch, getStoredPin, setStoredPin } from './api';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { RefreshIcon } from './components/Icons';
 import { ChevronLeft, ChevronRight, Settings, RotateCcw, CheckCircle2, AlertTriangle, AlertCircle, Moon, Smartphone, Lock, CalendarDays, Sun } from 'lucide-react';
 import { Button } from './components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './components/ui/table';
@@ -277,7 +276,7 @@ export default function App() {
             <Smartphone className="h-4 w-4 mr-2 text-teal-700" /> Enlace personal
           </Button>
           <Button variant="outline" className="h-12 text-xs font-bold px-4 rounded-lg" onClick={() => setShowRequests(!showRequests)}>
-            <span className="mr-2"><RefreshIcon /></span> Peticiones ({config.requests.length})
+            Peticiones ({config.requests.length})
           </Button>
           <Dialog open={isConfigOpen} onOpenChange={setIsConfigOpen}>
             <DialogTrigger asChild>
