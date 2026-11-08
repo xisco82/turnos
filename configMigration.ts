@@ -1,7 +1,7 @@
 import { AppConfig, DayOfWeek, EmployeeConfig, Shift } from './types';
 import {
   DAYS_OF_WEEK, DEFAULT_CONFIG, DEFAULT_ROLES, DEFAULT_RULES, DEFAULT_SHIFTS,
-  defaultCoverage, defaultPersonalRules, getMondayISO, newEmployee, toISODate,
+  cleanShiftPrefs, defaultCoverage, defaultPersonalRules, getMondayISO, newEmployee, toISODate,
 } from './constants';
 
 const isDay = (d: any): d is DayOfWeek => DAYS_OF_WEEK.includes(d);
@@ -132,6 +132,7 @@ export const normalizeConfig = (raw: any): AppConfig => {
       ...newEmployee(),
       ...e,
       rules: { ...defaultPersonalRules(), ...(e.rules || {}) },
+      shiftPrefs: cleanShiftPrefs(e.shiftPrefs),
       fixedOffDays: (e.fixedOffDays || []).filter(isDay),
       fixedShifts: e.fixedShifts || {},
       morningOnlyDays: (e.morningOnlyDays || []).filter(isDay),

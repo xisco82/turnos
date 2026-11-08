@@ -178,6 +178,21 @@ export default function SetupForm({ onSave, initialConfig }: SetupFormProps) {
                   </button>
                 ))}
               </div>
+              <div className="mt-4 bg-sky-50 border border-sky-200 rounded-xl p-3">
+                <p className="text-sm font-black text-zinc-900">Mañanas y tardes preferidas por semana</p>
+                <p className="text-xs text-zinc-600 mb-2">Lo elige el propio empleado desde su portal; aquí también lo puedes cambiar. Es una preferencia suave: la cobertura manda.</p>
+                {([['mornings', config.shifts.M.label], ['afternoons', config.shifts.T.label]] as const).map(([k, label]) => (
+                  <label key={k} className="flex items-center justify-between gap-3 text-xs font-bold text-zinc-700 mb-1.5">
+                    {label}s / semana
+                    <select value={emp.shiftPrefs?.[k] ?? ''}
+                      onChange={e => updateEmp(emp.id, { shiftPrefs: { ...(emp.shiftPrefs || { mornings: null, afternoons: null }), [k]: e.target.value === '' ? null : Number(e.target.value), updatedAt: new Date().toISOString() } })}
+                      className="px-2 py-1.5 bg-white border border-zinc-300 rounded-lg text-xs font-bold">
+                      <option value="">Sin preferencia</option>
+                      {[0, 1, 2, 3, 4, 5, 6, 7].map(n => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                  </label>
+                ))}
+              </div>
               <div className="mt-4 bg-amber-50 border border-amber-200 rounded-xl p-3">
                 <p className="text-sm font-black text-zinc-900">Trabajar solo de mañana</p>
                 <p className="text-xs text-zinc-600 mb-2">Los días marcados, si trabaja, siempre es de {config.shifts.M.label.toLowerCase()}. Sus días libres los sigue decidiendo el sistema.</p>

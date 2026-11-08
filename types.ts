@@ -46,6 +46,14 @@ export interface PersonalRules {
   fairRotation: Tri;
 }
 
+/** Cuántas mañanas / tardes le gustaría trabajar a la semana (null = sin preferencia). Preferencia suave. */
+export interface ShiftPrefs {
+  mornings: number | null;
+  afternoons: number | null;
+  /** Cuándo se cambió por última vez (ISO). La más reciente gana entre panel y portal. */
+  updatedAt?: string;
+}
+
 export interface EmployeeConfig {
   id: string;
   name: string;
@@ -70,6 +78,8 @@ export interface EmployeeConfig {
   morningOnlyDays: DayOfWeek[];
   /** Preferencia suave de turno. */
   preferredShift: 'M' | 'T' | 'none';
+  /** Nº preferido de mañanas y tardes por semana (lo elige el empleado en su portal). */
+  shiftPrefs: ShiftPrefs;
   fixedOffDays: DayOfWeek[];
   fixedShifts: Partial<Record<DayOfWeek, Shift>>;
 }

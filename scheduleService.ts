@@ -124,6 +124,9 @@ interface EmpCtx {
   forcedWeekendOff: boolean;
   expT: number;
   expS: number;
+  /** Mañanas / tardes que prefiere a la semana (null = sin preferencia). */
+  prefM: number | null;
+  prefT: number | null;
   relaxNotes: string[];
 }
 
@@ -137,6 +140,8 @@ const hoursFor = (ctx: EmpCtx, d: number, code: number, p: SolveParams) =>
 // ───────────────────── semanas posibles de un empleado ─────────────────────
 
 const PATTERN_CAP = 6000;
+/** Peso de cada mañana/tarde de diferencia con la preferencia del empleado. */
+const PREF_WEIGHT = 8;
 
 function enumeratePatterns(ctx: EmpCtx, p: SolveParams): Pattern[] {
   const out: Pattern[] = [];
@@ -185,13 +190,15 @@ function enumeratePatterns(ctx: EmpCtx, p: SolveParams): Pattern[] {
   };
 
   const costOf = (): number => {
-    let cost = 0, t = 0, s = 0, work = 0, last = -1;
+    let cost = 0, t = 0, s = 0, m = 0, work = 0, last = -1;
+    const hasPrefs = ctx.prefM !== null || ctx.prefT !== null;
     for (let d = 0; d < 7; d++) {
       const c = seq[d];
       if (isWorkCode(c)) work++;
       if (c === C_T) t++;
       if (c === C_S) s++;
-      if (ctx.emp.preferredShift !== 'none' && (c === C_M || c === C_T) && ctx.fixedStr[d] === null
+      if (c === C_M) m++;
+      if (!hasPrefs && ctx.emp.preferredShift !== 'none' && (c === C_M || c === C_T) && ctx.fixedStr[d] === null
         && CODE_TO_STR[c] !== ctx.emp.preferredShift) cost += 3;
       if (c === C_M || c === C_T || c === C_S) {
         if (last >= 0 && last !== c) cost += 2;
@@ -199,6 +206,10 @@ function enumeratePatterns(ctx: EmpCtx, p: SolveParams): Pattern[] {
       } else last = -1;
     }
     cost += 2 * (t - ctx.expT) ** 2 + 2 * (s - ctx.expS) ** 2;
+    // Preferencia del empleado: cada mañana o tarde de diferencia con lo que pidió cuesta.
+    // El especial (10-18) cuenta como mañana. Es una preferencia suave: la cobertura manda.
+    if (ctx.prefM !== null) cost += PREF_WEIGHT * Math.abs(m + s - ctx.prefM);
+    if (ctx.prefT !== null) cost += PREF_WEIGHT * Math.abs(t - ctx.prefT);
     if (ctx.tMin !== ctx.tMax) cost += 10 * Math.abs(work - ctx.targetWork);
     if (ctx.emp.weekendRotation && !ctx.forcedWeekendOff && isOffLike(seq[5]) && isOffLike(seq[6])
       && ctx.fixedStr[5] === null && ctx.fixedStr[6] === null) cost += 25;
@@ -585,6 +596,7 @@ function solveWeek(config: AppConfig, weekStart: string, state: ChainState): { r
     const fair = er.fair ? 0.5 : 0;
     const expT = emp.canAfternoon && !emp.permanentNight && tShare(emp) > 0
       ? Math.max(0, Math.min(target, ratioT * target * tShare(emp) + fair * (ratioT * h.work * tShare(emp) - h.T))) : 0;
+    const expTFinal = (emp.canAfternoon && !emp.permanentNight && emp.shiftPrefs?.afternoons != null) ? Math.min(target, emp.shiftPrefs.afternoons) : expT;
     const expS = emp.canSpecial && !emp.permanentNight ? Math.max(0, Math.min(target, ratioS * target + fair * (ratioS * h.work - h.S))) : 0;
     const fixedLs = f.map((s, d) => (s === 'L' ? d : -1)).filter(d => d >= 0);
     const fixedLsContiguous = fixedLs.every((d, i) => i === 0 || d === fixedLs[i - 1] + 1);
@@ -599,7 +611,9 @@ function solveWeek(config: AppConfig, weekStart: string, state: ChainState): { r
       restOn: er.restOn,
       restHours: er.restHours,
       consecutive: er.consecutive && fixedLsContiguous,
-      forcedWeekendOff, expT, expS, relaxNotes: [],
+      forcedWeekendOff, expT: expTFinal, expS, relaxNotes: [],
+      prefM: emp.canMorning || emp.morningOnlyDays?.length ? (emp.shiftPrefs?.mornings ?? null) : null,
+      prefT: emp.canAfternoon && !emp.permanentNight ? (emp.shiftPrefs?.afternoons ?? null) : null,
     };
   };
 
@@ -676,6 +690,18 @@ function solveWeek(config: AppConfig, weekStart: string, state: ChainState): { r
       }
     });
   }
+
+  // Preferencias de mañanas/tardes que no se han podido cumplir esta semana (aviso informativo).
+  ctxs.forEach((c, i) => {
+    if (c.prefM === null && c.prefT === null) return;
+    const sh = rows[i].shifts.map(s => s.shift);
+    const m = sh.filter(s => s === 'M' || s === 'S').length;
+    const t = sh.filter(s => s === 'T').length;
+    const parts: string[] = [];
+    if (c.prefM !== null && m !== c.prefM) parts.push(`${c.prefM} mañana${c.prefM === 1 ? '' : 's'} (tiene ${m})`);
+    if (c.prefT !== null && t !== c.prefT) parts.push(`${c.prefT} tarde${c.prefT === 1 ? '' : 's'} (tiene ${t})`);
+    if (parts.length) notes.push({ level: 'info', rule: 'Preferencias', message: `${c.emp.name} prefería ${parts.join(' y ')}; no ha cabido esta semana (cobertura, rotación de noches o fin de semana libre).` });
+  });
 
   if (!exact) notes.unshift({ level: 'error', rule: 'Generación', message: 'No hay forma de cumplir todas las normas a la vez con el personal disponible esta semana. Se ha generado el cuadrante con el menor número posible de incumplimientos (detalle abajo).' });
   uncoveredNights.forEach(d => notes.push({ level: 'error', rule: 'Noches rotativas', message: `${d}: no hay nadie disponible en la rotación de noches.` }));

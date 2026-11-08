@@ -1,23 +1,36 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { AppConfig, ScheduleRequest, RequestType, DayOfWeek } from '../types';
-import { Calendar, Send, CheckCircle2, User, ArrowLeft, MessageSquare, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react';
-import { DAYS_OF_WEEK, displayShift, getMondayISO, shiftLegend, shiftStyle } from '../constants';
+import { AppConfig, ScheduleRequest, RequestType, DayOfWeek, ShiftPrefs } from '../types';
+import { Sun, Sunset, Calendar, Send, CheckCircle2, User, ArrowLeft, MessageSquare, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react';
+import { DAYS_OF_WEEK, cleanShiftPrefs, displayShift, effectiveRules, getMondayISO, shiftLegend, shiftStyle } from '../constants';
 import { addDaysISO, getNightPlusForWeek, getPublicWeekSchedule } from '../scheduleService';
 
 interface EmployeePortalProps {
   config: AppConfig;
   onBackToAdmin?: () => void;
   onRequestSubmitted?: (req: ScheduleRequest) => void;
+  onPrefsSaved?: (employeeId: string, prefs: ShiftPrefs) => void;
 }
+
+interface PortalEmployee { id: string; name: string; canMorning?: boolean; canAfternoon?: boolean; workDays?: number }
 
 interface PublicRow { employeeId: string; employeeName: string; shifts: { day: DayOfWeek; shift: string; label: string }[] }
 
 const EMP_KEY = 'turnos_portal_employee';
 
-export default function EmployeePortal({ config, onBackToAdmin, onRequestSubmitted }: EmployeePortalProps) {
-  const [tab, setTab] = useState<'turnos' | 'pedir'>('turnos');
-  const [employees, setEmployees] = useState<{ id: string; name: string }[]>(
-    () => config.employees.filter(e => e.active && e.name.trim()).map(e => ({ id: e.id, name: e.name })));
+export default function EmployeePortal({ config, onBackToAdmin, onRequestSubmitted, onPrefsSaved }: EmployeePortalProps) {
+  const [tab, setTab] = useState<'turnos' | 'prefs' | 'pedir'>('turnos');
+  const [employees, setEmployees] = useState<PortalEmployee[]>(
+    () => config.employees.filter(e => e.active && e.name.trim()).map(e => ({
+      id: e.id, name: e.name, canMorning: e.canMorning && !e.permanentNight, canAfternoon: e.canAfternoon && !e.permanentNight,
+      workDays: effectiveRules(config, e).workDays,
+    })));
+  const [shiftLabels, setShiftLabels] = useState({ M: config.shifts.M.label, T: config.shifts.T.label });
+  // preferencias de mañanas/tardes (null = sin preferencia)
+  const [prefM, setPrefM] = useState<number | null>(null);
+  const [prefT, setPrefT] = useState<number | null>(null);
+  const [prefsSaving, setPrefsSaving] = useState(false);
+  const [prefsMsg, setPrefsMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [serverPrefs, setServerPrefs] = useState<Record<string, ShiftPrefs> | null>(null);
   const [managerName, setManagerName] = useState(config.managerName || 'el responsable');
   const [selectedId, setSelectedId] = useState<string>(() => { try { return localStorage.getItem(EMP_KEY) || ''; } catch { return ''; } });
   const [week, setWeek] = useState(getMondayISO());
@@ -41,7 +54,9 @@ export default function EmployeePortal({ config, onBackToAdmin, onRequestSubmitt
   useEffect(() => {
     fetch('/api/public/employees').then(r => (r.ok ? r.json() : null)).then(d => {
       if (d?.employees?.length) { setEmployees(d.employees); setManagerName(d.managerName || managerName); }
+      if (d?.shiftLabels) setShiftLabels(d.shiftLabels);
     }).catch(() => {});
+    fetch('/api/public/preferences').then(r => (r.ok ? r.json() : null)).then(d => { if (d && typeof d === 'object') setServerPrefs(d); }).catch(() => {});
     fetch('/api/requests').then(r => (r.ok ? r.json() : null)).then(d => { if (Array.isArray(d)) setAllRequests(d); }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -65,7 +80,37 @@ export default function EmployeePortal({ config, onBackToAdmin, onRequestSubmitt
     return () => { cancelled = true; };
   }, [week, config]);
 
+  useEffect(() => {
+    const p = cleanShiftPrefs(serverPrefs?.[selectedId] ?? config.employees.find(e => e.id === selectedId)?.shiftPrefs);
+    setPrefM(p.mornings);
+    setPrefT(p.afternoons);
+    setPrefsMsg(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId, serverPrefs]);
+
   const selected = employees.find(e => e.id === selectedId);
+  const maxDays = selected?.workDays ?? 5;
+  const canM = selected?.canMorning !== false;
+  const canT = selected?.canAfternoon !== false;
+  const prefsOverflow = (canM ? prefM ?? 0 : 0) + (canT ? prefT ?? 0 : 0) > maxDays;
+
+  const savePrefs = async () => {
+    if (!selectedId) return setPrefsMsg({ ok: false, text: 'Selecciona tu nombre arriba.' });
+    if (prefsOverflow) return setPrefsMsg({ ok: false, text: `Entre mañanas y tardes no pueden pasar de ${maxDays} días a la semana.` });
+    setPrefsSaving(true);
+    setPrefsMsg(null);
+    const body = { employeeId: selectedId, mornings: canM ? prefM : null, afternoons: canT ? prefT : null };
+    let saved: ShiftPrefs = { mornings: body.mornings, afternoons: body.afternoons, updatedAt: new Date().toISOString() };
+    try {
+      const res = await fetch('/api/public/preferences', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (res.ok) saved = cleanShiftPrefs(await res.json());
+      else if (res.status === 400) { const e = await res.json().catch(() => null); setPrefsSaving(false); return setPrefsMsg({ ok: false, text: e?.error || 'No se pudo guardar.' }); }
+    } catch { /* sin servidor: se guarda en este navegador */ }
+    setServerPrefs(prev => ({ ...(prev || {}), [selectedId]: saved }));
+    onPrefsSaved?.(selectedId, saved);
+    setPrefsSaving(false);
+    setPrefsMsg({ ok: true, text: 'Guardado. Se tendrá en cuenta al preparar los próximos cuadrantes.' });
+  };
   const myRow = rows.find(r => r.employeeId === selectedId);
   const totalDays = useMemo(() => {
     if (!startDate || !endDate) return 0;
@@ -127,7 +172,7 @@ export default function EmployeePortal({ config, onBackToAdmin, onRequestSubmitt
         </label>
 
         <div className="flex gap-1 mb-4">
-          {([['turnos', 'Turnos'], ['pedir', 'Pedir días']] as const).map(([id, label]) => (
+          {([['turnos', 'Turnos'], ['prefs', 'Mis preferencias'], ['pedir', 'Pedir días']] as const).map(([id, label]) => (
             <button key={id} type="button" onClick={() => setTab(id)} className={`flex-1 py-2.5 rounded-xl text-sm font-black ${tab === id ? 'bg-zinc-900 text-white' : 'bg-white text-zinc-600 border border-zinc-200'}`}>{label}</button>
           ))}
         </div>
@@ -198,6 +243,52 @@ export default function EmployeePortal({ config, onBackToAdmin, onRequestSubmitt
             <div className="flex flex-wrap gap-x-4 gap-y-1 mt-4 text-xs text-zinc-600">
               {legend.map(l => <span key={l.code}><b className="text-zinc-900">{l.code}</b> {l.label}</span>)}
             </div>
+          </div>
+        )}
+
+        {tab === 'prefs' && (
+          <div className="bg-white rounded-2xl border border-zinc-200 p-5 space-y-5">
+            <div>
+              <h2 className="text-lg font-black text-zinc-900">¿Cuántas mañanas y tardes prefieres?</h2>
+              <p className="text-sm text-zinc-600 mt-1">Elige cuántos turnos de cada tipo te gustaría hacer <b>a la semana</b>. Es una preferencia: se intenta respetar, pero a veces la cobertura del hotel no lo permite.</p>
+            </div>
+            {!selectedId ? (
+              <p className="text-sm font-bold text-zinc-500">Elige tu nombre arriba para indicar tus preferencias.</p>
+            ) : (
+              <>
+                {([
+                  { key: 'M', title: shiftLabels.M, icon: <Sun className="w-4 h-4 text-amber-600" />, value: prefM, set: setPrefM, allowed: canM, on: 'bg-amber-500 text-white border-amber-500' },
+                  { key: 'T', title: shiftLabels.T, icon: <Sunset className="w-4 h-4 text-sky-600" />, value: prefT, set: setPrefT, allowed: canT, on: 'bg-sky-600 text-white border-sky-600' },
+                ]).map(row => (
+                  <div key={row.key} className={row.allowed ? '' : 'opacity-50'}>
+                    <p className="text-sm font-black text-zinc-800 flex items-center gap-1.5 mb-2">{row.icon} {row.title}s por semana</p>
+                    {!row.allowed && <p className="text-xs text-zinc-500 mb-2">No haces este turno.</p>}
+                    <div className="flex flex-wrap gap-1.5">
+                      <button type="button" disabled={!row.allowed} onClick={() => row.set(null)}
+                        className={`px-3 py-2 rounded-xl text-sm font-bold border-2 ${row.value === null ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white border-zinc-200 text-zinc-700'}`}>Me da igual</button>
+                      {Array.from({ length: maxDays + 1 }, (_, n) => (
+                        <button key={n} type="button" disabled={!row.allowed} onClick={() => row.set(n)}
+                          className={`w-11 py-2 rounded-xl text-sm font-black border-2 ${row.value === n ? row.on : 'bg-white border-zinc-200 text-zinc-700'}`}>{n}</button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+                <p className={`text-xs font-bold ${prefsOverflow ? 'text-rose-700' : 'text-zinc-500'}`}>
+                  {prefsOverflow
+                    ? `Entre mañanas y tardes no pueden pasar de ${maxDays} (tus días de trabajo a la semana).`
+                    : `Trabajas ${maxDays} días a la semana. Los que no elijas los reparte el sistema.`}
+                </p>
+                {prefsMsg && (
+                  <div className={`flex items-center gap-2 text-xs font-bold p-3 rounded-xl border ${prefsMsg.ok ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
+                    {prefsMsg.ok ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}{prefsMsg.text}
+                  </div>
+                )}
+                <button type="button" onClick={savePrefs} disabled={prefsSaving || prefsOverflow}
+                  className="w-full flex items-center justify-center gap-2 bg-teal-700 hover:bg-teal-800 disabled:opacity-50 text-white font-black py-3.5 rounded-xl">
+                  <CheckCircle2 className="w-4 h-4" /> {prefsSaving ? 'Guardando…' : 'Guardar mis preferencias'}
+                </button>
+              </>
+            )}
           </div>
         )}
 

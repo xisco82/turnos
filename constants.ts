@@ -1,6 +1,6 @@
 import {
   AppConfig, DayCoverage, DayOfWeek, EmployeeConfig, PersonalRules, RoleDef, RulesConfig,
-  Shift, ShiftDef, Tri, WorkShift,
+  Shift, ShiftDef, ShiftPrefs, Tri, WorkShift,
 } from './types';
 
 export const DAYS_OF_WEEK: DayOfWeek[] = [
@@ -141,6 +141,34 @@ export const countPersonalRules = (emp: EmployeeConfig) => {
 export const morningTeam = (config: Pick<AppConfig, 'rules' | 'coverage'>, day: DayOfWeek, m: number, s: number) =>
   config.rules.autoSpecial?.enabled ? m + Math.max(0, s - (config.coverage[day].S.enabled ? config.coverage[day].S.min : 0)) : m;
 
+export const defaultShiftPrefs = (): ShiftPrefs => ({ mornings: null, afternoons: null });
+
+const prefNum = (v: any): number | null => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(7, Math.round(v))) : null);
+
+/** Limpia unas preferencias llegadas de fuera (servidor, archivo guardado…). */
+export const cleanShiftPrefs = (p: any): ShiftPrefs => ({
+  mornings: prefNum(p?.mornings),
+  afternoons: prefNum(p?.afternoons),
+  ...(typeof p?.updatedAt === 'string' ? { updatedAt: p.updatedAt } : {}),
+});
+
+export const hasShiftPrefs = (p: ShiftPrefs | undefined) => !!p && (p.mornings !== null || p.afternoons !== null);
+
+/** Aplica las preferencias enviadas desde el portal: para cada empleado gana la más reciente. */
+export const mergeShiftPrefs = (employees: EmployeeConfig[], incoming: Record<string, any> | null | undefined): EmployeeConfig[] => {
+  if (!incoming) return employees;
+  let changed = false;
+  const out = employees.map(e => {
+    const inc = incoming[e.id];
+    if (!inc) return e;
+    const cleaned = cleanShiftPrefs(inc);
+    if ((cleaned.updatedAt || '') <= (e.shiftPrefs?.updatedAt || '')) return e;
+    changed = true;
+    return { ...e, shiftPrefs: cleaned };
+  });
+  return changed ? out : employees;
+};
+
 export const newEmployee = (partial: Partial<EmployeeConfig> = {}): EmployeeConfig => ({
   id: `emp-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
   name: '',
@@ -156,6 +184,7 @@ export const newEmployee = (partial: Partial<EmployeeConfig> = {}): EmployeeConf
   postNight: 'default',
   rules: defaultPersonalRules(),
   preferredShift: 'none',
+  shiftPrefs: defaultShiftPrefs(),
   morningOnlyDays: [],
   fixedOffDays: [],
   fixedShifts: {},

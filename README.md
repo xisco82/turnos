@@ -22,6 +22,7 @@ Generador automático de cuadrantes semanales con normas activables.
 - Turno especial automático: los días con 4 o más de mañana, una de esas personas hace 10:00–18:00 (por turnos). Se ajusta en Ajustes → Normas generales; cada empleado puede quedar fuera desactivando «Especial» en su ficha.
 - También se puede pedir un turno especial extra por día en Ajustes → Personal por día.
 - Plus de nocturnidad: cuenta las horas trabajadas entre las 22:00 y las 06:00 (tarde = 2 h, noche = 6 h) y marca quién llega a 26 h al mes. Aparece en la columna «Nocturnidad», en el PDF y en el portal de cada empleado. Se ajusta en Ajustes → Normas generales.
+- **Preferencia de mañanas y tardes:** cada empleado entra en su portal → pestaña «Mis preferencias» y elige cuántas mañanas y cuántas tardes prefiere a la semana (o «Me da igual»). Es una preferencia suave: el cuadrante intenta cumplirla, pero la cobertura y el resto de normas mandan. Si una semana no cabe, el panel lo avisa debajo del estado de las normas. El administrador también puede verla y cambiarla en Ajustes → Equipo. Se guarda en `data/preferences.json`.
 - Si cambias una casilla a mano, el resto del cuadrante se reorganiza solo.
 - Encima del cuadrante aparece si cumple todas las normas o qué falla exactamente.
 
