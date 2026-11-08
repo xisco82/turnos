@@ -1,6 +1,6 @@
 import {
-  AppConfig, DayCoverage, DayOfWeek, EmployeeConfig, RoleDef, RulesConfig,
-  Shift, ShiftDef, WorkShift,
+  AppConfig, DayCoverage, DayOfWeek, EmployeeConfig, PersonalRules, RoleDef, RulesConfig,
+  Shift, ShiftDef, Tri, WorkShift,
 } from './types';
 
 export const DAYS_OF_WEEK: DayOfWeek[] = [
@@ -80,7 +80,65 @@ export const DEFAULT_RULES: RulesConfig = {
   minRest: { enabled: true, hours: 12 },
   fairRotation: true,
   absencesCountAsOff: true,
+  autoSpecial: { enabled: true, threshold: 4, count: 1 },
 };
+
+export const defaultPersonalRules = (): PersonalRules => ({
+  weeklyDays: 'default',
+  workDays: null,
+  consecutiveOffs: 'default',
+  minRest: 'default',
+  restHours: null,
+  absencesCountAsOff: 'default',
+  fairRotation: 'default',
+});
+
+const tri = (t: Tri | undefined, general: boolean) => (t === 'on' ? true : t === 'off' ? false : general);
+
+export interface EffectiveRules {
+  weeklyOn: boolean;
+  workDays: number;
+  consecutive: boolean;
+  restOn: boolean;
+  restHours: number;
+  absencesAsOff: boolean;
+  fair: boolean;
+  postNight: 'Afternoon' | 'Off' | null;
+}
+
+/** Normas que se aplican de verdad a un empleado: las suyas propias o, si no tiene, las generales. */
+export const effectiveRules = (config: Pick<AppConfig, 'rules'>, emp: EmployeeConfig): EffectiveRules => {
+  const g = config.rules;
+  const p = emp.rules || defaultPersonalRules();
+  const weeklyOn = tri(p.weeklyDays, g.weeklyDays.enabled);
+  const restOn = tri(p.minRest, g.minRest.enabled);
+  let postNight: 'Afternoon' | 'Off' | null;
+  if (emp.permanentNight || emp.postNight === 'none') postNight = null;
+  else if (emp.postNight === 'Afternoon' || emp.postNight === 'Off') postNight = emp.postNight;
+  else postNight = g.postNight.enabled ? g.postNight.defaultBehaviour : null;
+  return {
+    weeklyOn,
+    workDays: Math.max(0, Math.min(7, p.workDays ?? g.weeklyDays.workDays)),
+    consecutive: tri(p.consecutiveOffs, g.consecutiveOffs),
+    restOn,
+    restHours: p.restHours ?? g.minRest.hours,
+    absencesAsOff: tri(p.absencesCountAsOff, g.absencesCountAsOff),
+    fair: tri(p.fairRotation, g.fairRotation),
+    postNight,
+  };
+};
+
+/** Cuántas normas propias (distintas de la general) tiene un empleado. */
+export const countPersonalRules = (emp: EmployeeConfig) => {
+  const p = emp.rules || defaultPersonalRules();
+  return [p.weeklyDays !== 'default' || p.workDays !== null, p.consecutiveOffs !== 'default',
+    p.minRest !== 'default' || p.restHours !== null, p.absencesCountAsOff !== 'default', p.fairRotation !== 'default',
+    emp.postNight !== 'default'].filter(Boolean).length;
+};
+
+/** Personas del equipo de mañana: los de mañana más los del especial automático. */
+export const morningTeam = (config: Pick<AppConfig, 'rules' | 'coverage'>, day: DayOfWeek, m: number, s: number) =>
+  config.rules.autoSpecial?.enabled ? m + Math.max(0, s - (config.coverage[day].S.enabled ? config.coverage[day].S.min : 0)) : m;
 
 export const newEmployee = (partial: Partial<EmployeeConfig> = {}): EmployeeConfig => ({
   id: `emp-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
@@ -95,7 +153,9 @@ export const newEmployee = (partial: Partial<EmployeeConfig> = {}): EmployeeConf
   nightRotation: false,
   weekendRotation: true,
   postNight: 'default',
+  rules: defaultPersonalRules(),
   preferredShift: 'none',
+  morningOnlyDays: [],
   fixedOffDays: [],
   fixedShifts: {},
   ...partial,
@@ -174,7 +234,7 @@ export const SHIFT_STYLE: Record<string, string> = {
   T: 'bg-sky-100 text-sky-950 border-2 border-sky-300',
   N: 'bg-indigo-700 text-white border-2 border-indigo-900',
   S: 'bg-fuchsia-100 text-fuchsia-950 border-2 border-fuchsia-300',
-  L: 'bg-slate-100 text-slate-500 border-2 border-slate-200',
+  L: 'bg-yellow-300 text-black border-2 border-yellow-500',
   V: 'bg-emerald-100 text-emerald-950 border-2 border-emerald-300',
   BP: 'bg-rose-100 text-rose-950 border-2 border-rose-300',
   P: 'bg-purple-100 text-purple-950 border-2 border-purple-300',
@@ -185,5 +245,5 @@ export const shiftStyle = (s: Shift) => SHIFT_STYLE[s] || CUSTOM_SHIFT_STYLE;
 
 export const PDF_COLORS: Record<string, [number, number, number]> = {
   M: [254, 243, 199], T: [224, 242, 254], N: [67, 56, 202], S: [250, 232, 255],
-  L: [241, 245, 249], V: [209, 250, 229], BP: [255, 228, 230], P: [243, 232, 255], F: [255, 237, 213],
+  L: [253, 224, 71], V: [209, 250, 229], BP: [255, 228, 230], P: [243, 232, 255], F: [255, 237, 213],
 };

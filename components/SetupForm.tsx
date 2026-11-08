@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { AppConfig, DayOfWeek, EmployeeConfig, RoleKind, Shift, WorkShift } from '../types';
-import { DAYS_OF_WEEK, newEmployee } from '../constants';
+import { AppConfig, DayOfWeek, EmployeeConfig, PersonalRules, RoleKind, Shift, Tri, WorkShift } from '../types';
+import { DAYS_OF_WEEK, countPersonalRules, defaultPersonalRules, effectiveRules, newEmployee } from '../constants';
 import { normalizeConfig } from '../configMigration';
 import { mondayOfISO } from '../scheduleService';
 import { ChevronDown, ChevronUp, Plus, Trash2, ArrowUp, ArrowDown } from 'lucide-react';
@@ -13,7 +13,7 @@ interface SetupFormProps {
 type Tab = 'equipo' | 'normas' | 'cobertura' | 'horarios' | 'roles' | 'seguridad';
 const TABS: { id: Tab; label: string }[] = [
   { id: 'equipo', label: 'Equipo' },
-  { id: 'normas', label: 'Normas' },
+  { id: 'normas', label: 'Normas generales' },
   { id: 'cobertura', label: 'Personal por día' },
   { id: 'horarios', label: 'Horarios' },
   { id: 'roles', label: 'Roles' },
@@ -59,7 +59,21 @@ const Section = ({ title, children, hint }: { title: string; hint?: string; chil
   </section>
 );
 
-const ruleTag = (n: string) => <span className="inline-block mr-1.5 px-1.5 py-0.5 rounded bg-zinc-900 text-white text-[10px] font-black align-middle">{n}</span>;
+/** Selector de norma por empleado: como la general, sí o no. */
+const TriSelect = ({ value, general, onChange, label, children }: { value: Tri; general: boolean; onChange: (v: Tri) => void; label: string; children?: React.ReactNode }) => (
+  <div className="py-2 border-b border-zinc-100 last:border-0">
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <span className={`text-sm font-bold ${value === 'default' ? 'text-zinc-700' : 'text-indigo-900'}`}>{label}</span>
+      <div className="flex rounded-lg border border-zinc-200 overflow-hidden text-xs font-bold">
+        {([['default', `General (${general ? 'sí' : 'no'})`], ['on', 'Sí'], ['off', 'No']] as [Tri, string][]).map(([v, l]) => (
+          <button key={v} type="button" onClick={() => onChange(v)}
+            className={`px-2.5 py-1.5 ${value === v ? (v === 'default' ? 'bg-zinc-700 text-white' : 'bg-indigo-700 text-white') : 'bg-white text-zinc-600 hover:bg-zinc-50'}`}>{l}</button>
+        ))}
+      </div>
+    </div>
+    {children}
+  </div>
+);
 
 // ─────────────── formulario ───────────────
 
@@ -95,8 +109,14 @@ export default function SetupForm({ onSave, initialConfig }: SetupFormProps) {
       emp.permanentNight && 'Noche fija',
       emp.nightRotation && 'Rota noches',
       emp.weekendRotation && 'Rota fin de semana',
+      emp.morningOnlyDays.length === 7 ? 'Siempre de mañana' : emp.morningOnlyDays.length > 0 && `Mañana: ${DAYS_OF_WEEK.filter(d => emp.morningOnlyDays.includes(d)).map(d => d.slice(0, 2)).join('-')}`,
       emp.fixedOffDays.length > 0 && `Libra ${emp.fixedOffDays.map(d => d.slice(0, 3)).join('-')}`,
+      countPersonalRules(emp) > 0 && `${countPersonalRules(emp)} ${countPersonalRules(emp) === 1 ? 'norma propia' : 'normas propias'}`,
     ].filter(Boolean) as string[];
+    const pr = emp.rules || defaultPersonalRules();
+    const setPR = (patch: Partial<PersonalRules>) => updateEmp(emp.id, { rules: { ...pr, ...patch } });
+    const eff = effectiveRules(config, emp);
+    const g = config.rules;
 
     const toggleOff = (day: DayOfWeek) => {
       const has = emp.fixedOffDays.includes(day);
@@ -158,6 +178,31 @@ export default function SetupForm({ onSave, initialConfig }: SetupFormProps) {
                   </button>
                 ))}
               </div>
+              <div className="mt-4 bg-amber-50 border border-amber-200 rounded-xl p-3">
+                <p className="text-sm font-black text-zinc-900">Trabajar solo de mañana</p>
+                <p className="text-xs text-zinc-600 mb-2">Los días marcados, si trabaja, siempre es de {config.shifts.M.label.toLowerCase()}. Sus días libres los sigue decidiendo el sistema.</p>
+                <div className="flex gap-1 mb-2">
+                  {([['all', 'Siempre de mañana', DAYS_OF_WEEK], ['none', 'Ningún día', []]] as [string, string, DayOfWeek[]][]).map(([k, l, days]) => {
+                    const active = k === 'all' ? emp.morningOnlyDays.length === 7 : emp.morningOnlyDays.length === 0;
+                    return (
+                      <button key={k} type="button" onClick={() => updateEmp(emp.id, { morningOnlyDays: [...days], ...(days.length ? { canMorning: true } : {}) })}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${active ? 'bg-amber-500 text-white border-amber-500' : 'bg-white border-zinc-200 text-zinc-700'}`}>{l}</button>
+                    );
+                  })}
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {DAYS_OF_WEEK.map(day => {
+                    const on = emp.morningOnlyDays.includes(day);
+                    return (
+                      <button key={day} type="button" aria-pressed={on}
+                        onClick={() => updateEmp(emp.id, { canMorning: true, morningOnlyDays: on ? emp.morningOnlyDays.filter(d => d !== day) : DAYS_OF_WEEK.filter(d => d === day || emp.morningOnlyDays.includes(d)) })}
+                        className={`px-2.5 py-1.5 rounded-lg text-xs font-bold border ${on ? 'bg-amber-100 text-amber-950 border-amber-400' : 'bg-white border-zinc-200 text-zinc-500'}`}>
+                        {on ? '✓ ' : ''}{day}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
             <div>
               <Toggle on={emp.permanentNight} onChange={v => updateEmp(emp.id, { permanentNight: v, ...(v ? { canNight: true, nightRotation: false, weekendRotation: false } : {}) })}
@@ -167,14 +212,44 @@ export default function SetupForm({ onSave, initialConfig }: SetupFormProps) {
               <Toggle on={emp.weekendRotation} onChange={v => updateEmp(emp.id, { weekendRotation: v })}
                 label="Entra en la rotación de fin de semana libre" hint="Una semana de cada cierto tiempo librará sábado y domingo." />
               <p className="text-xs font-black text-zinc-700 mt-3 mb-1">Al salir de noche</p>
-              <div className="grid grid-cols-3 gap-1">
-                {([['default', 'Norma general'], ['Afternoon', 'Tarde al día siguiente'], ['Off', '2 días libres']] as const).map(([v, l]) => (
+              <div className="grid grid-cols-2 gap-1">
+                {([['default', `Norma general (${g.postNight.enabled ? (g.postNight.defaultBehaviour === 'Afternoon' ? 'tarde' : '2 libres') : 'sin norma'})`], ['Afternoon', 'Tarde al día siguiente'], ['Off', '2 días libres'], ['none', 'Sin norma']] as const).map(([v, l]) => (
                   <button key={v} type="button" onClick={() => updateEmp(emp.id, { postNight: v })}
                     className={`px-2 py-1.5 rounded-lg text-xs font-bold border leading-tight ${emp.postNight === v ? 'bg-indigo-700 text-white border-indigo-700' : 'bg-white border-zinc-200 text-zinc-700'}`}>
                     {l}
                   </button>
                 ))}
               </div>
+            </div>
+            <div className="md:col-span-2 mt-2 bg-indigo-50/40 border border-indigo-100 rounded-xl px-4 py-2">
+              <p className="text-sm font-black text-zinc-900 pt-1">Normas de esta persona</p>
+              <p className="text-xs text-zinc-500 pb-1">«General» sigue la norma de la pestaña Normas. «Sí» o «No» se aplica solo a {emp.name || 'esta persona'}.</p>
+              <TriSelect label={`Jornada fija: trabaja ${eff.workDays} días y libra ${7 - eff.workDays}`} value={pr.weeklyDays} general={g.weeklyDays.enabled} onChange={v => setPR({ weeklyDays: v })}>
+                {eff.weeklyOn && (
+                  <div className="flex items-center gap-2 text-xs mt-1.5 text-zinc-600">
+                    Días trabajados por semana:
+                    <NumberInput value={eff.workDays} min={1} max={7} onChange={v => setPR({ workDays: v })} />
+                    {pr.workDays !== null && <button type="button" onClick={() => setPR({ workDays: null })} className="font-bold text-indigo-700">Usar los generales ({g.weeklyDays.workDays})</button>}
+                  </div>
+                )}
+              </TriSelect>
+              <TriSelect label="Días libres seguidos" value={pr.consecutiveOffs} general={g.consecutiveOffs} onChange={v => setPR({ consecutiveOffs: v })} />
+              <TriSelect label={`Descanso mínimo de ${eff.restHours} h entre turnos`} value={pr.minRest} general={g.minRest.enabled} onChange={v => setPR({ minRest: v })}>
+                {eff.restOn && (
+                  <div className="flex items-center gap-2 text-xs mt-1.5 text-zinc-600">
+                    Horas:
+                    <NumberInput value={eff.restHours} min={0} max={24} onChange={v => setPR({ restHours: v })} />
+                    {pr.restHours !== null && <button type="button" onClick={() => setPR({ restHours: null })} className="font-bold text-indigo-700">Usar las generales ({g.minRest.hours} h)</button>}
+                  </div>
+                )}
+              </TriSelect>
+              <TriSelect label="Vacaciones y bajas cuentan como días libres" value={pr.absencesCountAsOff} general={g.absencesCountAsOff} onChange={v => setPR({ absencesCountAsOff: v })} />
+              <TriSelect label="Reparto justo de tardes con el resto" value={pr.fairRotation} general={g.fairRotation} onChange={v => setPR({ fairRotation: v })} />
+              {countPersonalRules(emp) > 0 && (
+                <button type="button" onClick={() => updateEmp(emp.id, { rules: defaultPersonalRules(), postNight: 'default' })} className="text-xs font-bold text-indigo-700 py-2">
+                  Volver a las normas generales
+                </button>
+              )}
             </div>
             <div className="md:col-span-2 mt-2">
               <p className="text-xs font-black text-zinc-700 mb-1">Días libres fijos</p>
@@ -231,6 +306,9 @@ export default function SetupForm({ onSave, initialConfig }: SetupFormProps) {
   const r = config.rules;
   const tabNormas = (
     <div className="space-y-3">
+      <p className="text-sm text-zinc-600 bg-indigo-50 border border-indigo-100 rounded-xl p-3">
+        Estas son las normas generales. Se aplican a todo el que no tenga una norma propia: en <b>Equipo</b>, abre a cada persona y cambia sus normas en «Normas de esta persona».
+      </p>
       <Section title="Jornada">
         <Toggle on={r.weeklyDays.enabled} onChange={v => setRules({ weeklyDays: { ...r.weeklyDays, enabled: v } })}
           label={`Trabajar ${r.weeklyDays.workDays} días y librar ${7 - r.weeklyDays.workDays}`} hint="Cada empleado trabaja exactamente estos días a la semana." />
@@ -259,6 +337,18 @@ export default function SetupForm({ onSave, initialConfig }: SetupFormProps) {
         )}
         <Toggle on={r.fairRotation} onChange={v => setRules({ fairRotation: v })} label="Repartir tardes y turnos especiales con justicia"
           hint="Tiene en cuenta las semanas anteriores para que nadie acumule más tardes que el resto." />
+      </Section>
+
+      <Section title="Turno especial automático">
+        <Toggle on={r.autoSpecial.enabled} onChange={v => setRules({ autoSpecial: { ...r.autoSpecial, enabled: v } })}
+          label={`Con ${r.autoSpecial.threshold} o más de mañana, ${r.autoSpecial.count === 1 ? 'una hace' : `${r.autoSpecial.count} hacen`} ${config.shifts.S.start.slice(0, 2)}-${config.shifts.S.end.slice(0, 2)}`}
+          hint="Ese día una de las personas de mañana pasa al turno especial. Se reparte por turnos entre quienes tienen activado «Especial» y no tienen ese día como «solo de mañana»." />
+        {r.autoSpecial.enabled && (
+          <div className="flex flex-wrap items-center gap-2 ml-[52px] text-sm">
+            Cuando haya <NumberInput value={r.autoSpecial.threshold} min={1} max={20} onChange={v => setRules({ autoSpecial: { ...r.autoSpecial, threshold: v } })} /> o más de mañana,
+            <NumberInput value={r.autoSpecial.count} min={1} max={10} onChange={v => setRules({ autoSpecial: { ...r.autoSpecial, count: v } })} /> pasa(n) al especial.
+          </div>
+        )}
       </Section>
 
       <Section title="Salida de noche">

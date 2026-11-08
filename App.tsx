@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { AppConfig, DayOfWeek, Shift } from './types';
-import { DAYS_OF_WEEK, DEFAULT_CONFIG, PDF_COLORS, displayShift, getMondayISO, shiftLegend, shiftStyle } from './constants';
+import { DAYS_OF_WEEK, DEFAULT_CONFIG, PDF_COLORS, displayShift, getMondayISO, morningTeam, shiftLegend, shiftStyle } from './constants';
 import { normalizeConfig, migrateOldOverrides } from './configMigration';
 import { addDaysISO, getWeekSchedule } from './scheduleService';
 import { adminFetch, getStoredPin, setStoredPin } from './api';
@@ -419,8 +419,10 @@ export default function App() {
         {DAYS_OF_WEEK.map((day, d) => {
           const cov = config.coverage[day];
           const count = (code: string) => scheduleData.filter(r => r.shifts[d].shift === code).length;
+          const team = morningTeam(config, day, count('M'), count('S'));
+          const autoS = team - count('M');
           const items: [string, number, string, boolean][] = [
-            [config.shifts.M.label, count('M'), cov.M.min === cov.M.max ? `${cov.M.min}` : `${cov.M.min}-${cov.M.max}`, count('M') >= cov.M.min && count('M') <= cov.M.max],
+            [autoS > 0 ? `${config.shifts.M.label} (${autoS} de ${displayShift('S', config)})` : config.shifts.M.label, team, cov.M.min === cov.M.max ? `${cov.M.min}` : `${cov.M.min}-${cov.M.max}`, team >= cov.M.min && team <= cov.M.max],
             [config.shifts.T.label, count('T'), cov.T.min === cov.T.max ? `${cov.T.min}` : `${cov.T.min}-${cov.T.max}`, count('T') >= cov.T.min && count('T') <= cov.T.max],
             [config.shifts.N.label, count('N'), `${cov.N}`, count('N') >= cov.N],
             ...(cov.S.enabled ? [[displayShift('S', config), count('S'), `${cov.S.min}`, count('S') >= cov.S.min] as [string, number, string, boolean]] : []),

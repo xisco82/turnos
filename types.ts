@@ -30,6 +30,22 @@ export interface RoleDef {
 
 export type PostNightBehaviour = 'Off' | 'Afternoon';
 
+/** 'default' = sigue la norma general; 'on' / 'off' = norma propia de este empleado. */
+export type Tri = 'default' | 'on' | 'off';
+
+/** Normas que cada empleado puede tener distintas a las generales. */
+export interface PersonalRules {
+  weeklyDays: Tri;
+  /** Días trabajados por semana de esta persona (null = los de la norma general). */
+  workDays: number | null;
+  consecutiveOffs: Tri;
+  minRest: Tri;
+  /** Horas de descanso de esta persona (null = las de la norma general). */
+  restHours: number | null;
+  absencesCountAsOff: Tri;
+  fairRotation: Tri;
+}
+
 export interface EmployeeConfig {
   id: string;
   name: string;
@@ -46,8 +62,12 @@ export interface EmployeeConfig {
   nightRotation: boolean;
   /** Entra en la rotación semanal de fin de semana libre (sábado + domingo). */
   weekendRotation: boolean;
-  /** Qué hace al salir de noche. 'default' = la norma general. */
-  postNight: PostNightBehaviour | 'default';
+  /** Qué hace al salir de noche. 'default' = la norma general, 'none' = sin norma. */
+  postNight: PostNightBehaviour | 'default' | 'none';
+  /** Normas propias de este empleado. */
+  rules: PersonalRules;
+  /** Días en que, si trabaja, siempre es de mañana (los 7 = siempre de mañana). */
+  morningOnlyDays: DayOfWeek[];
   /** Preferencia suave de turno. */
   preferredShift: 'M' | 'T' | 'none';
   fixedOffDays: DayOfWeek[];
@@ -93,6 +113,8 @@ export interface RulesConfig {
   fairRotation: boolean;
   /** Las vacaciones/bajas/peticiones cuentan como días libres de la semana. */
   absencesCountAsOff: boolean;
+  /** Los días con «threshold» o más personas de mañana, «count» de ellas hacen el turno especial. */
+  autoSpecial: { enabled: boolean; threshold: number; count: number };
 }
 
 export interface SecurityConfig {

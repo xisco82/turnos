@@ -1,7 +1,7 @@
 import { AppConfig, DayOfWeek, EmployeeConfig, Shift } from './types';
 import {
   DAYS_OF_WEEK, DEFAULT_CONFIG, DEFAULT_ROLES, DEFAULT_RULES, DEFAULT_SHIFTS,
-  defaultCoverage, getMondayISO, newEmployee, toISODate,
+  defaultCoverage, defaultPersonalRules, getMondayISO, newEmployee, toISODate,
 } from './constants';
 
 const isDay = (d: any): d is DayOfWeek => DAYS_OF_WEEK.includes(d);
@@ -118,6 +118,7 @@ export const normalizeConfig = (raw: any): AppConfig => {
   rules.nightRotation = { ...DEFAULT_RULES.nightRotation, ...(raw.rules?.nightRotation || {}) };
   rules.postNight = { ...DEFAULT_RULES.postNight, ...(raw.rules?.postNight || {}) };
   rules.minRest = { ...DEFAULT_RULES.minRest, ...(raw.rules?.minRest || {}) };
+  rules.autoSpecial = { ...DEFAULT_RULES.autoSpecial, ...(raw.rules?.autoSpecial || {}) };
 
   const roles = Array.isArray(raw.roles) && raw.roles.length ? raw.roles : DEFAULT_ROLES;
 
@@ -129,8 +130,10 @@ export const normalizeConfig = (raw: any): AppConfig => {
     employees: (Array.isArray(raw.employees) ? raw.employees : DEFAULT_CONFIG.employees).map((e: any) => ({
       ...newEmployee(),
       ...e,
+      rules: { ...defaultPersonalRules(), ...(e.rules || {}) },
       fixedOffDays: (e.fixedOffDays || []).filter(isDay),
       fixedShifts: e.fixedShifts || {},
+      morningOnlyDays: (e.morningOnlyDays || []).filter(isDay),
     })),
     shifts: {
       M: { ...DEFAULT_SHIFTS.M, ...(raw.shifts?.M || {}) },

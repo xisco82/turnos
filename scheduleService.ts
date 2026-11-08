@@ -18,7 +18,7 @@ import {
   AppConfig, DayOfWeek, EmployeeConfig, RoleKind, ScheduleIssue, ScheduleRow,
   Shift, WeekResult,
 } from './types';
-import { ABSENCE_SHIFTS, DAYS_OF_WEEK, toISODate } from './constants';
+import { ABSENCE_SHIFTS, DAYS_OF_WEEK, EffectiveRules, effectiveRules, morningTeam, toISODate } from './constants';
 
 // ───────────────────────── fechas ─────────────────────────
 
@@ -119,6 +119,7 @@ interface EmpCtx {
   targetWork: number;
   postNight: 'Afternoon' | 'Off' | null;
   restOn: boolean;
+  restHours: number;
   consecutive: boolean;
   forcedWeekendOff: boolean;
   expT: number;
@@ -128,7 +129,7 @@ interface EmpCtx {
 
 interface Pattern { cells: Int8Array; cost: number }
 
-interface SolveParams { hoursByCode: (Hours | null)[]; minRest: number }
+interface SolveParams { hoursByCode: (Hours | null)[] }
 
 const hoursFor = (ctx: EmpCtx, d: number, code: number, p: SolveParams) =>
   code === C_CUSTOM ? (ctx.fixedStr[d] ? parseCustomHours(ctx.fixedStr[d]!) : null) : p.hoursByCode[code] || null;
@@ -162,7 +163,7 @@ function enumeratePatterns(ctx: EmpCtx, p: SolveParams): Pattern[] {
       if (ph && ch) {
         const exempt = ctx.postNight === 'Afternoon' && prev === C_N && cur === C_T;
         const bothFixed = isFixed(d) && (d === 0 || isFixed(d - 1));
-        if (24 + ch.s - ph.e < p.minRest && !exempt && !bothFixed) return false;
+        if (24 + ch.s - ph.e < ctx.restHours && !exempt && !bothFixed) return false;
       }
     }
     return true;
@@ -458,8 +459,9 @@ function solveWeek(config: AppConfig, weekStart: string, state: ChainState): { r
   const rules = config.rules;
   const employees = config.employees.filter(e => e.active && e.name.trim() !== '');
   const overrides = config.overridesByWeek?.[weekStart] || {};
-  const workDays = rules.weeklyDays.enabled ? rules.weeklyDays.workDays : 5;
-  const offDays = 7 - workDays;
+  const eff: Record<string, EffectiveRules> = {};
+  employees.forEach(e => { eff[e.id] = effectiveRules(config, e); });
+  const offDaysOf = (id: string) => 7 - (eff[id].weeklyOn ? eff[id].workDays : 5);
   const notes: ScheduleIssue[] = [];
 
   const sh = config.shifts;
@@ -470,7 +472,7 @@ function solveWeek(config: AppConfig, weekStart: string, state: ChainState): { r
     normalizeHours(hourOf(sh.N.start), hourOf(sh.N.end)),
     normalizeHours(hourOf(sh.S.start), hourOf(sh.S.end)),
   ];
-  const params: SolveParams = { hoursByCode, minRest: rules.minRest.hours };
+  const params: SolveParams = { hoursByCode };
 
   // 1. Celdas fijas: cambio manual > petición/baja > turno fijo > libre fijo
   const fixed: Record<string, (Shift | null)[]> = {};
@@ -488,17 +490,20 @@ function solveWeek(config: AppConfig, weekStart: string, state: ChainState): { r
     });
   });
   const isFree = (id: string, d: number) => fixed[id][d] === null;
+  const morningOnly = (id: string, d: number) => !!employees.find(e => e.id === id)?.morningOnlyDays?.includes(DAYS_OF_WEEK[d]);
+  const freeForNight = (id: string, d: number) => isFree(id, d) && !morningOnly(id, d);
   const absCount = (id: string) => fixed[id].filter(s => s !== null && ABSENCE_SHIFTS.includes(s)).length;
   const targetWorkOf = (id: string) => {
     const abs = absCount(id);
-    return rules.absencesCountAsOff ? Math.max(0, 7 - abs - Math.max(0, offDays - abs)) : Math.max(0, 7 - abs - offDays);
+    const offDays = offDaysOf(id);
+    return eff[id].absencesAsOff ? Math.max(0, 7 - abs - Math.max(0, offDays - abs)) : Math.max(0, 7 - abs - offDays);
   };
 
   // 2. Conserje(s) de noche fijo(s)
   employees.filter(e => e.permanentNight).forEach(emp => {
     const f = fixed[emp.id];
-    let offs = f.filter(s => s === 'L' || (s !== null && ABSENCE_SHIFTS.includes(s) && rules.absencesCountAsOff)).length;
-    const need = rules.weeklyDays.enabled ? offDays : 0;
+    let offs = f.filter(s => s === 'L' || (s !== null && ABSENCE_SHIFTS.includes(s) && eff[emp.id].absencesAsOff)).length;
+    const need = eff[emp.id].weeklyOn ? offDaysOf(emp.id) : 0;
     for (let d = 0; d < 7 && offs < need; d++) {
       if (f[d] === null && (d === 6 || f[d + 1] === null || f[d + 1] === 'L')) { f[d] = 'L'; offs++; }
     }
@@ -520,14 +525,14 @@ function solveWeek(config: AppConfig, weekStart: string, state: ChainState): { r
       if (need <= 0) { block = null; continue; }
       while (need > 0) {
         let chosen: string | null = null;
-        if (block && block.lastDay === d - 1 && block.len < maxLen && isFree(block.empId, d)) {
+        if (block && block.lastDay === d - 1 && block.len < maxLen && freeForNight(block.empId, d)) {
           chosen = block.empId;
           block.len++;
         } else {
           let runLen = 0;
           for (let k = d; k < 7 && nightNeed[k] > 0 && runLen < maxLen; k++) runLen++;
-          const avail = nightQueue.filter(id => isFree(id, d) && !nightRotationIds.includes(id));
-          const fully = avail.find(id => { for (let k = d; k < d + runLen; k++) if (!isFree(id, k)) return false; return true; });
+          const avail = nightQueue.filter(id => freeForNight(id, d) && !nightRotationIds.includes(id));
+          const fully = avail.find(id => { for (let k = d; k < d + runLen; k++) if (!freeForNight(id, k)) return false; return true; });
           chosen = fully || avail[0] || null;
           if (chosen) {
             block = { empId: chosen, len: 1, lastDay: d };
@@ -549,7 +554,9 @@ function solveWeek(config: AppConfig, weekStart: string, state: ChainState): { r
   const totalT = DAYS_OF_WEEK.reduce((a, day) => a + config.coverage[day].T.min, 0);
   const totalS = DAYS_OF_WEEK.reduce((a, day) => a + (config.coverage[day].S.enabled ? config.coverage[day].S.min : 0), 0);
   const sumWork = (list: EmployeeConfig[]) => list.reduce((a, e) => a + targetWorkOf(e.id), 0) || 1;
-  const ratioT = totalT / sumWork(employees.filter(e => e.canAfternoon && !e.permanentNight));
+  const tShare = (e: EmployeeConfig) => (7 - (e.morningOnlyDays?.length || 0)) / 7;
+  const tCapable = employees.filter(e => e.canAfternoon && !e.permanentNight && tShare(e) > 0);
+  const ratioT = totalT / (tCapable.reduce((a, e) => a + targetWorkOf(e.id) * tShare(e), 0) || 1);
   const ratioS = totalS / sumWork(employees.filter(e => e.canSpecial && !e.permanentNight));
 
   const buildCtx = (emp: EmployeeConfig, forcedWeekendOff: boolean): EmpCtx => {
@@ -561,6 +568,8 @@ function solveWeek(config: AppConfig, weekStart: string, state: ChainState): { r
     const dom = DAYS_OF_WEEK.map((day, d) => {
       if (f[d] !== null) return [strToCode(f[d])];
       if (emp.permanentNight) return [C_N, C_L];
+      // Día marcado como «solo de mañana»: si trabaja, de mañana.
+      if (emp.morningOnlyDays?.includes(day)) return [C_M, C_L];
       const c = config.coverage[day];
       const opts: number[] = [];
       if (emp.canMorning) opts.push(C_M);
@@ -572,22 +581,24 @@ function solveWeek(config: AppConfig, weekStart: string, state: ChainState): { r
     });
     const target = targetWorkOf(emp.id);
     const h = state.hist[emp.id] || emptyHist();
-    const fair = rules.fairRotation ? 0.5 : 0;
-    const expT = emp.canAfternoon && !emp.permanentNight ? Math.max(0, Math.min(target, ratioT * target + fair * (ratioT * h.work - h.T))) : 0;
+    const er = eff[emp.id];
+    const fair = er.fair ? 0.5 : 0;
+    const expT = emp.canAfternoon && !emp.permanentNight && tShare(emp) > 0
+      ? Math.max(0, Math.min(target, ratioT * target * tShare(emp) + fair * (ratioT * h.work * tShare(emp) - h.T))) : 0;
     const expS = emp.canSpecial && !emp.permanentNight ? Math.max(0, Math.min(target, ratioS * target + fair * (ratioS * h.work - h.S))) : 0;
     const fixedLs = f.map((s, d) => (s === 'L' ? d : -1)).filter(d => d >= 0);
     const fixedLsContiguous = fixedLs.every((d, i) => i === 0 || d === fixedLs[i - 1] + 1);
-    const behaviour = emp.postNight === 'default' ? rules.postNight.defaultBehaviour : emp.postNight;
     return {
       emp, kind: role.kind, roleName: role.name, fixedStr: f, dom,
       prevCodes: [strToCode(prev[5] ?? null), prevLastCode],
       prevLastHours: prevLastCode === C_CUSTOM ? parseCustomHours(prevLast!) : (isWorkCode(prevLastCode) ? hoursByCode[prevLastCode] : null),
-      tMin: rules.weeklyDays.enabled ? target : 0,
-      tMax: rules.weeklyDays.enabled ? target : 7 - absCount(emp.id),
+      tMin: er.weeklyOn ? target : 0,
+      tMax: er.weeklyOn ? target : 7 - absCount(emp.id),
       targetWork: target,
-      postNight: rules.postNight.enabled && !emp.permanentNight ? behaviour : null,
-      restOn: rules.minRest.enabled,
-      consecutive: rules.consecutiveOffs && fixedLsContiguous,
+      postNight: er.postNight,
+      restOn: er.restOn,
+      restHours: er.restHours,
+      consecutive: er.consecutive && fixedLsContiguous,
       forcedWeekendOff, expT, expS, relaxNotes: [],
     };
   };
@@ -636,6 +647,36 @@ function solveWeek(config: AppConfig, weekStart: string, state: ChainState): { r
     };
   });
 
+  // 7b. Turno especial automático: los días con 4 (o las que se configuren) de mañana,
+  //     una de esas personas pasa a hacer el especial (10-18). Se reparte por turnos.
+  if (rules.autoSpecial.enabled) {
+    const weekS: Record<string, number> = {};
+    DAYS_OF_WEEK.forEach((day, d) => {
+      const morning = rows.filter(r => r.shifts[d].shift === 'M');
+      if (morning.length < Math.max(1, rules.autoSpecial.threshold)) return;
+      const candidates = morning.filter(r => {
+        const c = ctxs.find(x => x.emp.id === r.employeeId)!;
+        return c.fixedStr[d] === null && c.emp.canSpecial && !c.emp.morningOnlyDays?.includes(day);
+      });
+      candidates.sort((a, b) => {
+        const wa = weekS[a.employeeId] || 0, wb = weekS[b.employeeId] || 0;
+        if (wa !== wb) return wa - wb;
+        const ha = (state.hist[a.employeeId]?.S || 0), hb = (state.hist[b.employeeId]?.S || 0);
+        if (ha !== hb) return ha - hb;
+        const ia = employees.findIndex(e => e.id === a.employeeId), ib = employees.findIndex(e => e.id === b.employeeId);
+        return ((ia + d) % employees.length) - ((ib + d) % employees.length);
+      });
+      const n = Math.min(Math.max(1, rules.autoSpecial.count), morning.length - 1, candidates.length);
+      for (let k = 0; k < n; k++) {
+        candidates[k].shifts[d].shift = 'S';
+        weekS[candidates[k].employeeId] = (weekS[candidates[k].employeeId] || 0) + 1;
+      }
+      if (candidates.length === 0) {
+        notes.push({ level: 'info', rule: 'Especial automático', message: `${day}: nadie de mañana puede hacer el turno especial.` });
+      }
+    });
+  }
+
   if (!exact) notes.unshift({ level: 'error', rule: 'Generación', message: 'No hay forma de cumplir todas las normas a la vez con el personal disponible esta semana. Se ha generado el cuadrante con el menor número posible de incumplimientos (detalle abajo).' });
   uncoveredNights.forEach(d => notes.push({ level: 'error', rule: 'Noches rotativas', message: `${d}: no hay nadie disponible en la rotación de noches.` }));
   if (rules.weekendRotation && !weekendOffId && weekendQueue.length) {
@@ -644,6 +685,8 @@ function solveWeek(config: AppConfig, weekStart: string, state: ChainState): { r
 
   const issues = [...notes, ...validateSchedule(config, rows, ctxs.map(c => ({
     id: c.emp.id, kind: c.kind, targetWork: c.targetWork, postNight: c.postNight, prev: state.prevWeek[c.emp.id] || [],
+    weeklyOn: eff[c.emp.id].weeklyOn, restOn: eff[c.emp.id].restOn, restHours: eff[c.emp.id].restHours,
+    morningOnlyDays: c.emp.morningOnlyDays || [],
   })), params)];
 
   // 8. Estado para la semana siguiente
@@ -670,7 +713,7 @@ function solveWeek(config: AppConfig, weekStart: string, state: ChainState): { r
 
 // ───────────────────────── validación independiente ─────────────────────────
 
-interface ValidationEmp { id: string; kind: RoleKind; targetWork: number; postNight: 'Afternoon' | 'Off' | null; prev: Shift[] }
+interface ValidationEmp { id: string; kind: RoleKind; targetWork: number; postNight: 'Afternoon' | 'Off' | null; prev: Shift[]; weeklyOn: boolean; restOn: boolean; restHours: number; morningOnlyDays: DayOfWeek[] }
 
 function validateSchedule(config: AppConfig, rows: ScheduleRow[], emps: ValidationEmp[], p: SolveParams): ScheduleIssue[] {
   const issues: ScheduleIssue[] = [];
@@ -681,7 +724,8 @@ function validateSchedule(config: AppConfig, rows: ScheduleRow[], emps: Validati
   DAYS_OF_WEEK.forEach((day, d) => {
     const c = config.coverage[day];
     const at = (code: string) => rows.filter(r => r.shifts[d].shift === code);
-    const m = at('M').length, t = at('T').length, s = at('S').length, n = at('N').length;
+    const t = at('T').length, s = at('S').length, n = at('N').length;
+    const m = morningTeam(config, day, at('M').length, s);
     if (m < c.M.min) issues.push({ level: 'error', rule: 'Cobertura', message: `${day}: faltan ${c.M.min - m} de mañana (${m}/${c.M.min}).` });
     if (m > c.M.max) issues.push({ level: 'warning', rule: 'Cobertura', message: `${day}: sobran ${m - c.M.max} de mañana (${m}, máx. ${c.M.max}).` });
     if (t < c.T.min) issues.push({ level: 'error', rule: 'Cobertura', message: `${day}: faltan ${c.T.min - t} de tarde (${t}/${c.T.min}).` });
@@ -700,18 +744,23 @@ function validateSchedule(config: AppConfig, rows: ScheduleRow[], emps: Validati
     if (!e) return;
     const shifts = r.shifts.map(s => s.shift);
     const work = shifts.filter(s => isWorkCode(strToCode(s))).length;
-    if (rules.weeklyDays.enabled && work !== e.targetWork) {
+    r.shifts.forEach(s => {
+      if (e.morningOnlyDays.includes(s.day) && isWorkCode(strToCode(s.shift)) && s.shift !== 'M') {
+        issues.push({ level: 'warning', rule: 'Solo de mañana', message: `${r.employeeName}: el ${s.day} debería trabajar de mañana y tiene «${s.shift}».` });
+      }
+    });
+    if (e.weeklyOn && work !== e.targetWork) {
       issues.push({ level: 'error', rule: 'Días trabajados', message: `${r.employeeName}: trabaja ${work} días (le tocan ${e.targetWork}).` });
     }
     const all: (string | null)[] = [...(e.prev.length ? e.prev.slice(-2) : [null, null]), ...shifts];
     for (let i = 2; i < all.length; i++) {
       const a = all[i - 1], b = all[i]!;
       const day = DAYS_OF_WEEK[i - 2];
-      if (rules.minRest.enabled && a && isWorkCode(strToCode(a)) && isWorkCode(strToCode(b))) {
+      if (e.restOn && a && isWorkCode(strToCode(a)) && isWorkCode(strToCode(b))) {
         const ha = hoursOfStr(a), hb = hoursOfStr(b);
         const exempt = e.postNight === 'Afternoon' && a === 'N' && b === 'T';
-        if (ha && hb && !exempt && 24 + hb.s - ha.e < rules.minRest.hours) {
-          issues.push({ level: 'warning', rule: 'Descanso', message: `${r.employeeName}: el ${day} entra con menos de ${rules.minRest.hours} h de descanso.` });
+        if (ha && hb && !exempt && 24 + hb.s - ha.e < e.restHours) {
+          issues.push({ level: 'warning', rule: 'Descanso', message: `${r.employeeName}: el ${day} entra con menos de ${e.restHours} h de descanso.` });
         }
       }
       if (e.postNight && a === 'N' && b !== 'N') {
