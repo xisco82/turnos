@@ -132,6 +132,10 @@ export interface NightPlusResult {
   label: string;
   threshold: number;
   rows: NightPlusRow[];
+  /** true = semana del último día del mes: horas del mes completo y resultado definitivo. */
+  final?: boolean;
+  /** Último día del mes, cuando sale el resultado (yyyy-mm-dd). */
+  closingDate?: string;
 }
 
 export interface SecurityConfig {

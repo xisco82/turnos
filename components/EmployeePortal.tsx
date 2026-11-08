@@ -24,7 +24,7 @@ export default function EmployeePortal({ config, onBackToAdmin, onRequestSubmitt
   const [rows, setRows] = useState<PublicRow[]>([]);
   const [legend, setLegend] = useState(shiftLegend(config));
   const [loading, setLoading] = useState(false);
-  const [nightPlus, setNightPlus] = useState<{ label: string; threshold: number; rows: { employeeId: string; hours: number; plus: boolean }[] } | null>(null);
+  const [nightPlus, setNightPlus] = useState<{ label: string; threshold: number; final?: boolean; closingDate?: string; to?: string; rows: { employeeId: string; hours: number; plus: boolean }[] } | null>(null);
 
   // formulario
   const [requestType, setRequestType] = useState<RequestType>('Vacaciones');
@@ -158,13 +158,15 @@ export default function EmployeePortal({ config, onBackToAdmin, onRequestSubmitt
               const p = nightPlus.rows.find(r => r.employeeId === selectedId);
               if (!p) return null;
               return (
-                <div className={`mb-5 rounded-xl p-3 flex items-center justify-between gap-3 ${p.plus ? 'bg-indigo-700 text-white' : 'bg-indigo-50 text-indigo-950 border border-indigo-100'}`}>
+                <div className={`mb-5 rounded-xl p-3 flex items-center justify-between gap-3 ${nightPlus.final && p.plus ? 'bg-indigo-700 text-white' : 'bg-indigo-50 text-indigo-950 border border-indigo-100'}`}>
                   <div>
-                    <div className="text-xs font-bold opacity-80">Horas nocturnas · {nightPlus.label}</div>
+                    <div className="text-xs font-bold opacity-80">{nightPlus.final ? `Horas nocturnas en todo ${nightPlus.label}` : `Horas nocturnas de ${nightPlus.label} hasta ahora`}</div>
                     <div className="text-2xl font-black">{p.hours} h</div>
                   </div>
                   <div className="text-right text-sm font-black">
-                    {p.plus ? 'Tienes plus de nocturnidad' : `Sin plus (desde ${nightPlus.threshold} h)`}
+                    {nightPlus.final
+                      ? (p.plus ? 'Tienes plus de nocturnidad' : `Sin plus (desde ${nightPlus.threshold} h al mes)`)
+                      : `Resultado del plus el ${new Date((nightPlus.closingDate || '') + 'T12:00:00').toLocaleDateString('es-ES', { day: 'numeric', month: 'long' })}`}
                   </div>
                 </div>
               );

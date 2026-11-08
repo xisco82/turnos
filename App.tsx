@@ -174,10 +174,10 @@ export default function App() {
     doc.text(shiftLegend(config).map(l => `${l.code} ${l.label}`).join('   '), 14, 25);
     autoTable(doc, {
       startY: 30,
-      head: [['Empleado', ...DAYS_OF_WEEK.map((d, i) => `${d} ${addDaysISO(week, i).slice(8)}`), ...(nightPlus ? [`Nocturnidad ${nightPlus.label}`] : [])]],
+      head: [['Empleado', ...DAYS_OF_WEEK.map((d, i) => `${d} ${addDaysISO(week, i).slice(8)}`), ...(nightPlus ? [nightPlus.final ? `Plus noct. ${nightPlus.label}` : `Noct. acumulada ${nightPlus.label}`] : [])]],
       body: scheduleData.map(r => {
         const p = plusOf(r.employeeId);
-        return [r.employeeName, ...r.shifts.map(s => displayShift(s.shift, config)), ...(nightPlus ? [`${p?.hours ?? 0} h · ${p?.plus ? 'SÍ' : 'NO'}`] : [])];
+        return [r.employeeName, ...r.shifts.map(s => displayShift(s.shift, config)), ...(nightPlus ? [p ? (nightPlus.final ? `${p.hours} h · ${p.plus ? 'SÍ' : 'NO'}` : `${p.hours} h`) : 'No aplica'] : [])];
       }),
       theme: 'grid',
       headStyles: { fillColor: [31, 41, 55] },
@@ -392,8 +392,13 @@ export default function App() {
               ))}
               {nightPlus && (
                 <TableHead className="text-center py-3 px-2 min-w-[130px] bg-indigo-50">
-                  <div className="text-xs font-black uppercase text-indigo-950">Nocturnidad</div>
-                  <div className="text-[11px] font-bold text-indigo-800 normal-case">{nightPlus.label} · plus desde {nightPlus.threshold} h</div>
+                  <div className="text-xs font-black uppercase text-indigo-950">Plus nocturnidad</div>
+                  {nightPlus.final ? (
+                    <div className="text-[11px] font-bold text-indigo-800 normal-case">Resultado de {nightPlus.label}<br />(cierre {fmtDay(nightPlus.closingDate!)})</div>
+                  ) : (
+                    <div className="text-[11px] font-bold text-indigo-800 normal-case">Acumulado de {nightPlus.label}<br />hasta el {fmtDay(nightPlus.to)}</div>
+                  )}
+                  <div className="text-[11px] text-indigo-700 normal-case">plus desde {nightPlus.threshold} h al mes</div>
                 </TableHead>
               )}
             </TableRow>
@@ -421,14 +426,28 @@ export default function App() {
                 })}
                 {nightPlus && (() => {
                   const p = plusOf(row.employeeId);
-                  const hours = p?.hours ?? 0;
+                  if (!p) {
+                    return (
+                      <TableCell className="text-center bg-indigo-50/50 px-2">
+                        <span className="text-xs font-bold text-zinc-500">No aplica<br />(conserje de noche)</span>
+                      </TableCell>
+                    );
+                  }
+                  const hours = p.hours;
                   return (
-                    <TableCell className="text-center bg-indigo-50/50 px-2" title={`${hours} h nocturnas (${config.rules.nightPlus.start}–${config.rules.nightPlus.end}) en ${nightPlus.label}`}>
+                    <TableCell className="text-center bg-indigo-50/50 px-2" title={`${hours} h nocturnas en ${nightPlus.label}`}>
+                      <div className="text-[11px] text-zinc-500 font-bold">{nightPlus.final ? 'Mes completo' : 'Llevas este mes'}</div>
                       <div className="text-2xl font-black text-zinc-950 leading-none">{hours} h</div>
-                      <div className="text-[11px] text-zinc-500 font-bold mt-1">esta semana {weekNightHours(row.employeeId)} h</div>
-                      <span className={`inline-block mt-1.5 px-2.5 py-0.5 rounded-full text-xs font-black ${p?.plus ? 'bg-indigo-700 text-white' : 'bg-zinc-200 text-zinc-600'}`}>
-                        {p?.plus ? 'Sí tiene plus' : `No (faltan ${Math.max(0, Math.round((nightPlus.threshold - hours) * 100) / 100)} h)`}
-                      </span>
+                      <div className="text-[11px] text-zinc-500 mt-1">esta semana {weekNightHours(row.employeeId)} h</div>
+                      {nightPlus.final ? (
+                        <span className={`inline-block mt-1.5 px-2.5 py-0.5 rounded-full text-xs font-black ${p.plus ? 'bg-indigo-700 text-white' : 'bg-zinc-200 text-zinc-600'}`}>
+                          {p.plus ? 'Sí tiene plus' : 'No tiene plus'}
+                        </span>
+                      ) : (
+                        <span className="inline-block mt-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-white border border-indigo-200 text-indigo-800">
+                          Resultado el {fmtDay(nightPlus.closingDate!)}
+                        </span>
+                      )}
                     </TableCell>
                   );
                 })()}

@@ -827,18 +827,12 @@ export function getPublicWeekSchedule(config: AppConfig, weekStart: string) {
 
 // ───────────────────────── plus de nocturnidad ─────────────────────────
 
-/** Horas de un turno que caen dentro de la franja nocturna (por defecto 22:00–06:00).
- *  Ejemplo: T (16:00–00:00) = 2 h; N (00:00–08:00) = 6 h; M y 10-18 = 0 h. */
+/** Horas nocturnas (franja 22:00–06:00) de un turno. Solo cuentan la tarde y la noche:
+ *  T (16:00–00:00) = 2 h y N (00:00–08:00) = 6 h. Mañana, especial, libres y horarios manuales = 0 h. */
 export function nightHoursOfShift(shift: Shift, config: Pick<AppConfig, 'shifts' | 'rules'>): number {
-  const code = strToCode(shift);
-  if (!isWorkCode(code)) return 0;
-  let h: Hours | null;
-  if (code === C_CUSTOM) h = parseCustomHours(shift);
-  else {
-    const def = config.shifts[CODE_TO_STR[code] as 'M' | 'T' | 'N' | 'S'];
-    h = normalizeHours(hourOf(def.start), hourOf(def.end));
-  }
-  if (!h) return 0;
+  if (shift !== 'T' && shift !== 'N') return 0;
+  const def = config.shifts[shift];
+  const h: Hours = normalizeHours(hourOf(def.start), hourOf(def.end));
   const np = config.rules.nightPlus;
   const ws = hourOf(np.start);
   let we = hourOf(np.end);
@@ -852,18 +846,26 @@ export function nightHoursOfShift(shift: Shift, config: Pick<AppConfig, 'shifts'
 
 const MONTHS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 
-/** Periodo de cálculo del plus para una semana: el mes del jueves de esa semana, o la propia semana. */
-export function nightPlusPeriodForWeek(config: AppConfig, weekStart: string) {
+/** El plus es mensual y su resultado se da el último día del mes.
+ *  - Semana que contiene el último día de un mes → mes completo y resultado definitivo.
+ *  - Resto de semanas → horas acumuladas del mes desde el día 1 hasta el domingo de esa semana. */
+export function nightPlusPeriodForWeek(_config: AppConfig, weekStart: string) {
   const monday = mondayOfISO(weekStart);
-  if (config.rules.nightPlus.period === 'week') {
-    return { from: monday, to: addDaysISO(monday, 6), label: 'esta semana' };
+  for (let d = 0; d < 7; d++) {
+    const date = addDaysISO(monday, d);
+    if (addDaysISO(date, 1).slice(0, 7) !== date.slice(0, 7)) {
+      const dt = parseISO(date);
+      return { from: `${date.slice(0, 7)}-01`, to: date, closingDate: date, final: true, label: `${MONTHS[dt.getMonth()]} ${dt.getFullYear()}` };
+    }
   }
-  const thursday = parseISO(addDaysISO(monday, 3));
-  const y = thursday.getFullYear(), m = thursday.getMonth();
-  const from = toISODate(new Date(y, m, 1));
-  const to = toISODate(new Date(y, m + 1, 0));
-  return { from, to, label: `${MONTHS[m]} ${y}` };
+  const dt = parseISO(monday);
+  const closingDate = toISODate(new Date(dt.getFullYear(), dt.getMonth() + 1, 0));
+  return { from: `${monday.slice(0, 7)}-01`, to: addDaysISO(monday, 6), closingDate, final: false, label: `${MONTHS[dt.getMonth()]} ${dt.getFullYear()}` };
 }
+
+/** El conserje de noche (trabaja siempre de noche) no entra en el plus: la noche ya es su trabajo. */
+export const countsForNightPlus = (config: AppConfig, employeeId: string) =>
+  !config.employees.find(e => e.id === employeeId)?.permanentNight;
 
 /** Horas nocturnas y plus de cada empleado entre dos fechas (incluidas). */
 export function getNightPlus(config: AppConfig, from: string, to: string, label = ''): NightPlusResult {
@@ -871,7 +873,7 @@ export function getNightPlus(config: AppConfig, from: string, to: string, label 
   let w = mondayOfISO(from);
   while (w <= to) {
     const res = getWeekSchedule(config, w);
-    res.rows.forEach(r => {
+    res.rows.filter(r => countsForNightPlus(config, r.employeeId)).forEach(r => {
       const t = totals.get(r.employeeId) || { name: r.employeeName, hours: 0 };
       r.shifts.forEach((s, d) => {
         const date = addDaysISO(w, d);
@@ -892,5 +894,5 @@ export function getNightPlus(config: AppConfig, from: string, to: string, label 
 
 export function getNightPlusForWeek(config: AppConfig, weekStart: string): NightPlusResult {
   const p = nightPlusPeriodForWeek(config, weekStart);
-  return getNightPlus(config, p.from, p.to, p.label);
+  return { ...getNightPlus(config, p.from, p.to, p.label), final: p.final, closingDate: p.closingDate };
 }

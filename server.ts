@@ -81,7 +81,7 @@ app.get('/api/public/schedule', (req, res) => {
     res.json({
       weekStart: data.weekStart,
       legend: shiftLegend(cfg),
-      nightPlus: np && { label: np.label, threshold: np.threshold, rows: np.rows.map(r => ({ employeeId: r.employeeId, hours: r.hours, plus: r.plus })) },
+      nightPlus: np && { label: np.label, threshold: np.threshold, final: np.final, closingDate: np.closingDate, to: np.to, rows: np.rows.map(r => ({ employeeId: r.employeeId, hours: r.hours, plus: r.plus })) },
       rows: data.rows.map(r => ({
         employeeId: r.employeeId,
         employeeName: r.employeeName,
